@@ -2460,23 +2460,11 @@ void CodeGen::genCodeForTreeNode(GenTreePtr treeNode)
             // X86 Long comparison
             else if (varTypeIsLong(op1Type))
             {
-                // When not materializing the result in a register, the compare logic is generated
-                // when we generate the GT_JTRUE.
-                if (treeNode->gtRegNum != REG_NA)
-                {
-                    genCompareLong(treeNode);
-                }
-                else
-                {
-                    if ((treeNode->gtNext != nullptr) && (treeNode->gtNext->OperGet() != GT_JTRUE))
-                    {
-                        NYI("Long compare/reload/jtrue sequence");
-                    }
-
-                    // We generate the compare when we generate the GT_JTRUE, but we need to consume
-                    // the operands now.
-                    genConsumeOperands(treeNode->AsOp());
-                }
+#ifdef DEBUG
+                LIR::Use use;
+                assert((treeNode->gtRegNum != REG_NA) || !LIR::AsRange(compiler->compCurBB).TryGetUse(treeNode, &use));
+#endif
+                genCompareLong(treeNode);
             }
 #endif // !defined(_TARGET_64BIT_)
             else
@@ -2540,6 +2528,19 @@ void CodeGen::genCodeForTreeNode(GenTreePtr treeNode)
                     genDefineTempLabel(skipLabel);
                 }
             }
+        }
+        break;
+
+        case GT_JCC:
+        {
+            GenTreeJumpCC* jcc = treeNode->AsJumpCC();
+
+            assert(compiler->compCurBB->bbJumpKind == BBJ_COND);
+
+            CompareKind compareKind = ((jcc->gtFlags & GTF_UNSIGNED) != 0) ? CK_UNSIGNED : CK_SIGNED;
+            emitJumpKind jumpKind   = genJumpKindForOper(jcc->gtCondition, compareKind);
+
+            inst_JMP(jumpKind, compiler->compCurBB->bbJumpDest);
         }
         break;
 
@@ -7034,8 +7035,6 @@ void CodeGen::genCompareLong(GenTreePtr treeNode)
 
     genConsumeOperands(tree);
 
-    assert(targetReg != REG_NA);
-
     GenTreePtr loOp1 = op1->gtGetOp1();
     GenTreePtr hiOp1 = op1->gtGetOp2();
     GenTreePtr loOp2 = op2->gtGetOp1();
@@ -7048,6 +7047,12 @@ void CodeGen::genCompareLong(GenTreePtr treeNode)
 
     // Emit the compare instruction
     getEmitter()->emitInsBinary(ins, cmpAttr, hiOp1, hiOp2);
+
+    // If we're not producing a register, we're done.
+    if (targetReg == REG_NA)
+    {
+        return;
+    }
 
     // Generate the first jump for the high compare
     CompareKind compareKind = ((tree->gtFlags & GTF_UNSIGNED) != 0) ? CK_UNSIGNED : CK_SIGNED;
