@@ -2535,7 +2535,8 @@ void Lowering::TreeNodeInfoInitIntrinsic(GenTree* tree)
     // Both operand and its result must be of floating point type.
     GenTree* op1 = tree->gtGetOp1();
     assert(varTypeIsFloating(op1));
-    assert(op1->TypeGet() == tree->TypeGet());
+    assert((op1->TypeGet() == tree->TypeGet()) ||
+           ((tree->gtIntrinsic.gtIntrinsicId == CORINFO_INTRINSIC_Round) && (tree->TypeGet() == TYP_INT)));
 
     info->srcCount = 1;
     info->dstCount = 1;
@@ -2543,6 +2544,7 @@ void Lowering::TreeNodeInfoInitIntrinsic(GenTree* tree)
     switch (tree->gtIntrinsic.gtIntrinsicId)
     {
         case CORINFO_INTRINSIC_Sqrt:
+        case CORINFO_INTRINSIC_Round:
             if (op1->isMemoryOp() || op1->IsCnsNonZeroFltOrDbl())
             {
                 MakeSrcContained(tree, op1);
@@ -2578,7 +2580,6 @@ void Lowering::TreeNodeInfoInitIntrinsic(GenTree* tree)
 #ifdef _TARGET_X86_
         case CORINFO_INTRINSIC_Cos:
         case CORINFO_INTRINSIC_Sin:
-        case CORINFO_INTRINSIC_Round:
             NYI_X86("Math intrinsics Cos, Sin and Round");
             break;
 #endif // _TARGET_X86_

@@ -18017,6 +18017,8 @@ bool Compiler::IsTargetIntrinsic(CorInfoIntrinsics intrinsicId)
         case CORINFO_INTRINSIC_Sqrt:
         case CORINFO_INTRINSIC_Abs:
             return true;
+        case CORINFO_INTRINSIC_Round:
+            return true;
 
         default:
             return false;

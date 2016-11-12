@@ -7321,6 +7321,13 @@ void CodeGen::genIntrinsic(GenTreePtr treeNode)
             genSSE2BitwiseOp(treeNode);
             break;
 
+        case CORINFO_INTRINSIC_Round:
+            noway_assert((treeNode->gtGetOp1()->TypeGet() == TYP_DOUBLE) && (treeNode->TypeGet() == TYP_INT));
+            genConsumeOperands(treeNode->AsOp());
+            getEmitter()->emitInsBinary(INS_cvtsd2si, emitTypeSize(treeNode), treeNode, 
+                                        treeNode->gtOp.gtOp1);
+            break;
+
         default:
             assert(!"genIntrinsic: Unsupported intrinsic");
             unreached();
