@@ -2475,6 +2475,8 @@ emitJumpKind CodeGen::genJumpKindForOper(genTreeOps cmp, CompareKind compareKind
         EJ_jle, // GT_LE
         EJ_jge, // GT_GE
         EJ_jg,  // GT_GT
+        EJ_je,  // GT_TEST_EQ
+        EJ_jne, // GT_TEST_NE
 #elif defined(_TARGET_ARMARCH_)
         EJ_eq,   // GT_EQ
         EJ_ne,   // GT_NE
@@ -2494,6 +2496,8 @@ emitJumpKind CodeGen::genJumpKindForOper(genTreeOps cmp, CompareKind compareKind
         EJ_jbe, // GT_LE
         EJ_jae, // GT_GE
         EJ_ja,  // GT_GT
+        EJ_je,  // GT_TEST_EQ
+        EJ_jne, // GT_TEST_NE
 #elif defined(_TARGET_ARMARCH_)
         EJ_eq,   // GT_EQ
         EJ_ne,   // GT_NE
@@ -2513,6 +2517,8 @@ emitJumpKind CodeGen::genJumpKindForOper(genTreeOps cmp, CompareKind compareKind
         EJ_NONE, // GT_LE
         EJ_jns,  // GT_GE   (S == 0)
         EJ_NONE, // GT_GT
+        EJ_je,  // GT_TEST_EQ
+        EJ_jne, // GT_TEST_NE
 #elif defined(_TARGET_ARMARCH_)
         EJ_eq,   // GT_EQ   (Z == 1)
         EJ_ne,   // GT_NE   (Z == 0)

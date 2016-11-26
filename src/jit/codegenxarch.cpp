@@ -1808,6 +1808,11 @@ void CodeGen::genCodeForTreeNode(GenTreePtr treeNode)
         }
         break;
 
+		case GT_TEST_EQ:
+		case GT_TEST_NE:
+            genTestInt(treeNode);
+            break;
+
         case GT_JTRUE:
         {
             GenTree* cmp = treeNode->gtOp.gtOp1;
@@ -6236,6 +6241,106 @@ void CodeGen::genCompareInt(GenTreePtr treeNode)
     getEmitter()->emitInsBinary(ins, cmpAttr, op1, op2);
 
     // Are we evaluating this into a register?
+    if (targetReg != REG_NA)
+    {
+        genSetRegToCond(targetReg, tree);
+        genProduceReg(tree);
+    }
+}
+
+void CodeGen::genTestInt(GenTreePtr treeNode)
+{
+    assert(treeNode->OperGet() == GT_TEST_EQ || treeNode->OperGet() == GT_TEST_NE);
+
+    GenTreeOp* tree      = treeNode->AsOp();
+    GenTreePtr op1       = tree->gtOp1;
+    GenTreePtr op2       = tree->gtOp2;
+    var_types  op1Type   = op1->TypeGet();
+    var_types  op2Type   = op2->TypeGet();
+    regNumber  targetReg = treeNode->gtRegNum;
+
+#ifdef _TARGET_X86_
+    assert(!varTypeIsLong(op1Type) && !varTypeIsLong(op2Type));
+#endif // _TARGET_X86_
+    assert(!varTypeIsFloating(op1Type) && !varTypeIsFloating(op2Type));
+    assert(!op1->isContainedIntOrIImmed());
+    assert(!op2->isMemoryOp());
+
+    genConsumeOperands(tree);
+
+    instruction ins = INS_test;
+    var_types cmpType = TYP_INT;
+    emitAttr cmpAttr;
+
+    if (genTypeSize(op1Type) == genTypeSize(op2Type))
+    {
+        if (op1Type == op2Type)
+        {
+            // If both types are exactly the same we can use that type
+            cmpType = op1Type;
+        }
+        else if (genTypeSize(op1Type) == 8)
+        {
+            // If we have two different int64 types we need to use a long compare
+            cmpType = TYP_LONG;
+        }
+
+        cmpAttr = emitTypeSize(cmpType);
+    }
+    else // Here we know that (op1Type != op2Type)
+    {
+        // Do we have a short compare against a constant in op2?
+        //
+        // We checked for this case in TreeNodeInfoInitCmp() and if we can perform a small
+        // compare immediate we labeled this compare with a GTF_RELOP_SMALL
+        // and for unsigned small non-equality compares the GTF_UNSIGNED flag.
+        //
+        if (op2->isContainedIntOrIImmed() && ((tree->gtFlags & GTF_RELOP_SMALL) != 0))
+        {
+            assert(varTypeIsSmall(op1Type));
+            cmpType = op1Type;
+        }
+#ifdef _TARGET_AMD64_
+        else // compare two different sized operands
+        {
+            // For this case we don't want any memory operands, only registers or immediates
+            //
+            assert(!op1->isContainedMemoryOp());
+            assert(!op2->isContainedMemoryOp());
+
+            // Check for the case where one operand is an int64 type
+            // Lower should have placed 32-bit operand in a register
+            // for signed comparisons we will sign extend the 32-bit value in place.
+            //
+            bool op1Is64Bit = (genTypeSize(op1Type) == 8);
+            bool op2Is64Bit = (genTypeSize(op2Type) == 8);
+            if (op1Is64Bit)
+            {
+                cmpType = TYP_LONG;
+                if (!(tree->gtFlags & GTF_UNSIGNED) && !op2Is64Bit)
+                {
+                    assert(op2->gtRegNum != REG_NA);
+                    inst_RV_RV(INS_movsxd, op2->gtRegNum, op2->gtRegNum, op2Type);
+                }
+            }
+            else if (op2Is64Bit)
+            {
+                cmpType = TYP_LONG;
+                if (!(tree->gtFlags & GTF_UNSIGNED) && !op1Is64Bit)
+                {
+                    assert(op1->gtRegNum != REG_NA);
+                }
+            }
+        }
+#endif // _TARGET_AMD64_
+
+        cmpAttr = emitTypeSize(cmpType);
+    }
+
+    assert(!op2->IsIntegralConst(0));
+
+    getEmitter()->emitInsBinary(INS_test, cmpAttr, op1, op2);
+
     if (targetReg != REG_NA)
     {
         genSetRegToCond(targetReg, tree);

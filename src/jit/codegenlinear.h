@@ -55,6 +55,8 @@ void genCompareFloat(GenTreePtr treeNode);
 
 void genCompareInt(GenTreePtr treeNode);
 
+void genTestInt(GenTreePtr treeNode);
+
 #if !defined(_TARGET_64BIT_)
 void genCompareLong(GenTreePtr treeNode);
 #endif

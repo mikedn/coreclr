@@ -145,6 +145,8 @@ GTNODE(LT               , "<"            ,GenTreeOp          ,0,GTK_BINOP|GTK_RE
 GTNODE(LE               , "<="           ,GenTreeOp          ,0,GTK_BINOP|GTK_RELOP)
 GTNODE(GE               , ">="           ,GenTreeOp          ,0,GTK_BINOP|GTK_RELOP)
 GTNODE(GT               , ">"            ,GenTreeOp          ,0,GTK_BINOP|GTK_RELOP)
+GTNODE(TEST_EQ          , "test_eq"      ,GenTreeOp          ,0,GTK_BINOP|GTK_RELOP)
+GTNODE(TEST_NE          , "test_ne"      ,GenTreeOp          ,0,GTK_BINOP|GTK_RELOP)
 
 GTNODE(COMMA            , "comma"        ,GenTreeOp          ,0,GTK_BINOP|GTK_NOTLIR)
 

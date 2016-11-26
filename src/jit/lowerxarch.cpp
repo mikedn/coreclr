@@ -602,6 +602,11 @@ void Lowering::TreeNodeInfoInit(GenTree* tree)
             TreeNodeInfoInitCmp(tree);
             break;
 
+		case GT_TEST_EQ:
+		case GT_TEST_NE:
+            TreeNodeInfoInitTest(tree);
+            break;
+
         case GT_CKFINITE:
             info->srcCount         = 1;
             info->dstCount         = 1;
@@ -3312,6 +3317,342 @@ void Lowering::SetIndirAddrOpCounts(GenTreePtr indirTree)
     }
 }
 
+void Lowering::TreeNodeInfoInitTest(GenTree* tree)
+{
+    assert(tree->OperIsCompare());
+
+    TreeNodeInfo* info = &(tree->gtLsraInfo);
+
+    info->srcCount = 2;
+    info->dstCount = 1;
+
+#ifdef _TARGET_X86_
+    // If the compare is used by a jump, we just need to set the condition codes. If not, then we need
+    // to store the result into the low byte of a register, which requires the dst be a byteable register.
+    // We always set the dst candidates, though, because if this is compare is consumed by a jump, they
+    // won't be used. We might be able to use GTF_RELOP_JMP_USED to determine this case, but it's not clear
+    // that flag is maintained until this location (especially for decomposed long compares).
+    info->setDstCandidates(m_lsra, RBM_BYTE_REGS);
+#endif // _TARGET_X86_
+
+    GenTreePtr op1     = tree->gtOp.gtOp1;
+    GenTreePtr op2     = tree->gtOp.gtOp2;
+    var_types  op1Type = op1->TypeGet();
+    var_types  op2Type = op2->TypeGet();
+
+#if !defined(_TARGET_64BIT_)
+    // Long compares will consume GT_LONG nodes, each of which produces two results.
+    // Thus for each long operand there will be an additional source.
+    // TODO-X86-CQ: Mark hiOp2 and loOp2 as contained if it is a constant or a memory op.
+    if (varTypeIsLong(op1Type))
+    {
+        info->srcCount++;
+    }
+    if (varTypeIsLong(op2Type))
+    {
+        info->srcCount++;
+    }
+#endif // !defined(_TARGET_64BIT_)
+
+    // If either of op1 or op2 is floating point values, then we need to use
+    // ucomiss or ucomisd to compare, both of which support the following form:
+    //     ucomis[s|d] xmm, xmm/mem
+    // That is only the second operand can be a memory op.
+    //
+    // Second operand is a memory Op:  Note that depending on comparison operator,
+    // the operands of ucomis[s|d] need to be reversed.  Therefore, either op1 or
+    // op2 can be a memory op depending on the comparison operator.
+    if (varTypeIsFloating(op1Type))
+    {
+        // The type of the operands has to be the same and no implicit conversions at this stage.
+        assert(op1Type == op2Type);
+
+        bool reverseOps;
+        if ((tree->gtFlags & GTF_RELOP_NAN_UN) != 0)
+        {
+            // Unordered comparison case
+            reverseOps = (tree->gtOper == GT_GT || tree->gtOper == GT_GE);
+        }
+        else
+        {
+            reverseOps = (tree->gtOper == GT_LT || tree->gtOper == GT_LE);
+        }
+
+        GenTreePtr otherOp;
+        if (reverseOps)
+        {
+            otherOp = op1;
+        }
+        else
+        {
+            otherOp = op2;
+        }
+
+        assert(otherOp != nullptr);
+        if (otherOp->IsCnsNonZeroFltOrDbl())
+        {
+            MakeSrcContained(tree, otherOp);
+        }
+        else if (otherOp->isMemoryOp() && ((otherOp == op2) || IsSafeToContainMem(tree, otherOp)))
+        {
+            MakeSrcContained(tree, otherOp);
+        }
+        else
+        {
+            // SSE2 allows only otherOp to be a memory-op. Since otherOp is not
+            // contained, we can mark it reg-optional.
+            SetRegOptional(otherOp);
+        }
+
+        return;
+    }
+
+    // TODO-XArch-CQ: factor out cmp optimization in 'genCondSetFlags' to be used here
+    // or in other backend.
+
+    bool hasShortCast = false;
+    if (CheckImmedAndMakeContained(tree, op2))
+    {
+        // If the types are the same, or if the constant is of the correct size,
+        // we can treat the isMemoryOp as contained.
+        bool op1CanBeContained = (genTypeSize(op1Type) == genTypeSize(op2Type));
+
+        // Do we have a short compare against a constant in op2
+        //
+        if (varTypeIsSmall(op1Type))
+        {
+            GenTreeIntCon* con  = op2->AsIntCon();
+            ssize_t        ival = con->gtIconVal;
+
+            bool isEqualityCompare = (tree->gtOper == GT_EQ || tree->gtOper == GT_NE);
+            bool useTest           = isEqualityCompare && (ival == 0);
+
+            if (!useTest)
+            {
+                ssize_t lo         = 0; // minimum imm value allowed for cmp reg,imm
+                ssize_t hi         = 0; // maximum imm value allowed for cmp reg,imm
+                bool    isUnsigned = false;
+
+                switch (op1Type)
+                {
+                    case TYP_BOOL:
+                        op1Type = TYP_UBYTE;
+                        __fallthrough;
+                    case TYP_UBYTE:
+                        lo         = 0;
+                        hi         = 0x7f;
+                        isUnsigned = true;
+                        break;
+                    case TYP_BYTE:
+                        lo = -0x80;
+                        hi = 0x7f;
+                        break;
+                    case TYP_CHAR:
+                        lo         = 0;
+                        hi         = 0x7fff;
+                        isUnsigned = true;
+                        break;
+                    case TYP_SHORT:
+                        lo = -0x8000;
+                        hi = 0x7fff;
+                        break;
+                    default:
+                        unreached();
+                }
+
+                if ((ival >= lo) && (ival <= hi))
+                {
+                    // We can perform a small compare with the immediate 'ival'
+                    tree->gtFlags |= GTF_RELOP_SMALL;
+                    if (isUnsigned && !isEqualityCompare)
+                    {
+                        tree->gtFlags |= GTF_UNSIGNED;
+                    }
+                    // We can treat the isMemoryOp as "contained"
+                    op1CanBeContained = true;
+                }
+            }
+        }
+
+        if (op1CanBeContained)
+        {
+            if (op1->isMemoryOp())
+            {
+                MakeSrcContained(tree, op1);
+            }
+            else
+            {
+                bool op1IsMadeContained = false;
+                bool isEqualityCompare = (tree->gtOper == GT_EQ || tree->gtOper == GT_NE);
+
+                if (op1->OperGet() == GT_CAST)
+                {
+                    // If the op1 is a cast operation, and cast type is one byte sized unsigned type,
+                    // we can directly use the number in register, instead of doing an extra cast step.
+                    var_types  dstType       = op1->CastToType();
+                    bool       isUnsignedDst = varTypeIsUnsigned(dstType);
+                    emitAttr   castSize      = EA_ATTR(genTypeSize(dstType));
+                    GenTreePtr castOp1       = op1->gtOp.gtOp1;
+                    genTreeOps castOp1Oper   = castOp1->OperGet();
+                    bool       safeOper      = false;
+
+                    // It is not always safe to change the gtType of 'castOp1' to TYP_UBYTE.
+                    // For example when 'castOp1Oper' is a GT_RSZ or GT_RSH then we are shifting
+                    // bits from the left into the lower bits.  If we change the type to a TYP_UBYTE
+                    // we will instead generate a byte sized shift operation:  shr  al, 24
+                    // For the following ALU operations is it safe to change the gtType to the
+                    // smaller type:
+                    //
+                    if ((castOp1Oper == GT_CNS_INT) || (castOp1Oper == GT_CALL) || // the return value from a Call
+                        (castOp1Oper == GT_LCL_VAR) || castOp1->OperIsLogical() || // GT_AND, GT_OR, GT_XOR
+                        castOp1->isMemoryOp())                                     // isIndir() || isLclField();
+                    {
+                        safeOper = true;
+                    }
+
+                    if ((castSize == EA_1BYTE) && isUnsignedDst && // Unsigned cast to TYP_UBYTE
+                        safeOper &&                                // Must be a safe operation
+                        !op1->gtOverflow())                        // Must not be an overflow checking cast
+                    {
+                        // Currently all of the Oper accepted as 'safeOper' are
+                        // non-overflow checking operations.  If we were to add
+                        // an overflow checking operation then this assert needs
+                        // to be moved above to guard entry to this block.
+                        //
+                        assert(!castOp1->gtOverflowEx()); // Must not be an overflow checking operation
+
+                        GenTreePtr removeTreeNode = op1;
+                        tree->gtOp.gtOp1          = castOp1;
+                        op1                       = castOp1;
+                        castOp1->gtType           = TYP_UBYTE;
+
+                        // trim down the value if castOp1 is an int constant since its type changed to UBYTE.
+                        if (castOp1Oper == GT_CNS_INT)
+                        {
+                            castOp1->gtIntCon.gtIconVal = (UINT8)castOp1->gtIntCon.gtIconVal;
+                        }
+
+                        // TODO-Cleanup: we're within "if (CheckImmedAndMakeContained(tree, op2))", so isn't
+                        // the following condition always true?
+                        if (op2->isContainedIntOrIImmed())
+                        {
+                            ssize_t val = (ssize_t)op2->AsIntConCommon()->IconValue();
+                            if (val >= 0 && val <= 255)
+                            {
+                                op2->gtType = TYP_UBYTE;
+                                tree->gtFlags |= GTF_UNSIGNED;
+
+                                // right now the op1's type is the same as op2's type.
+                                // if op1 is MemoryOp, we should make the op1 as contained node.
+                                if (castOp1->isMemoryOp())
+                                {
+                                    MakeSrcContained(tree, op1);
+                                    op1IsMadeContained = true;
+                                }
+                            }
+                        }
+
+                        BlockRange().Remove(removeTreeNode);
+
+                        // We've changed the type on op1 to TYP_UBYTE, but we already processed that node. We need to
+                        // go back and mark it byteable.
+                        // TODO-Cleanup: it might be better to move this out of the TreeNodeInfoInit pass to the earlier
+                        // "lower" pass, in which case the byteable check would just fall out. But that is quite
+                        // complex!
+                        TreeNodeInfoInitCheckByteable(op1);
+
+#ifdef DEBUG
+                        if (comp->verbose)
+                        {
+                            printf(
+                                "TreeNodeInfoInitCmp: Removing a GT_CAST to TYP_UBYTE and changing castOp1->gtType to "
+                                "TYP_UBYTE\n");
+                            comp->gtDispTreeRange(BlockRange(), tree);
+                        }
+#endif
+                    }
+                }
+
+                // If not made contained, op1 can be marked as reg-optional.
+                if (!op1IsMadeContained)
+                {
+                    SetRegOptional(op1);
+
+                    // If op1 codegen sets ZF and SF flags and ==/!= against
+                    // zero, we don't need to generate test instruction,
+                    // provided we don't have another GenTree node between op1
+                    // and tree that could potentially modify flags.
+                    //
+                    // TODO-CQ: right now the below peep is inexpensive and
+                    // gets the benefit in most of cases because in majority
+                    // of cases op1, op2 and tree would be in that order in
+                    // execution.  In general we should be able to check that all
+                    // the nodes that come after op1 in execution order do not
+                    // modify the flags so that it is safe to avoid generating a
+                    // test instruction.  Such a check requires that on each
+                    // GenTree node we need to set the info whether its codegen
+                    // will modify flags.
+                    //
+                    // TODO-CQ: We can optimize compare against zero in the
+                    // following cases by generating the branch as indicated
+                    // against each case.
+                    //  1) unsigned compare
+                    //        < 0  - always FALSE
+                    //       <= 0  - ZF=1 and jne
+                    //        > 0  - ZF=0 and je
+                    //       >= 0  - always TRUE
+                    //
+                    // 2) signed compare
+                    //        < 0  - SF=1 and js
+                    //       >= 0  - SF=0 and jns
+                    if (isEqualityCompare && op1->gtSetZSFlags() && op2->IsIntegralConst(0) && (op1->gtNext == op2) &&
+                        (op2->gtNext == tree))
+                    {
+                        // Require codegen of op1 to set the flags.
+                        assert(!op1->gtSetFlags());
+                        op1->gtFlags |= GTF_SET_FLAGS;
+                    }
+                }
+            }
+        }
+    }
+    else if (op1Type == op2Type)
+    {
+        if (op2->isMemoryOp())
+        {
+            MakeSrcContained(tree, op2);
+        }
+        else if (op1->isMemoryOp() && IsSafeToContainMem(tree, op1))
+        {
+            MakeSrcContained(tree, op1);
+        }
+        else if (op1->IsCnsIntOrI())
+        {
+            // TODO-CQ: We should be able to support swapping op1 and op2 to generate cmp reg, imm,
+            // but there is currently an assert in CodeGen::genCompareInt().
+            // https://github.com/dotnet/coreclr/issues/7270
+            SetRegOptional(op2);
+        }
+        else
+        {
+            // One of op1 or op2 could be marked as reg optional
+            // to indicate that codegen can still generate code
+            // if one of them is on stack.
+            SetRegOptional(PreferredRegOptionalOperand(tree));
+        }
+
+        if (varTypeIsSmall(op1Type) && varTypeIsUnsigned(op1Type))
+        {
+            // Mark the tree as doing unsigned comparison if
+            // both the operands are small and unsigned types.
+            // Otherwise we will end up performing a signed comparison
+            // of two small unsigned values without zero extending them to
+            // TYP_INT size and which is incorrect.
+            tree->gtFlags |= GTF_UNSIGNED;
+        }
+    }
+}
+
 void Lowering::TreeNodeInfoInitCmp(GenTreePtr tree)
 {
     assert(tree->OperIsCompare());
@@ -3478,138 +3819,9 @@ void Lowering::TreeNodeInfoInitCmp(GenTreePtr tree)
             else
             {
                 bool op1IsMadeContained = false;
-
-                // When op1 is a GT_AND we can often generate a single "test" instruction
-                // instead of two instructions (an "and" instruction followed by a "cmp"/"test").
-                //
-                // This instruction can only be used for equality or inequality comparisons.
-                // and we must have a compare against zero.
-                //
-                // If we have a postive test for a single bit we can reverse the condition and
-                // make the compare be against zero.
-                //
-                // Example:
-                //                  GT_EQ                              GT_NE
-                //                  /   \                              /   \
-                //             GT_AND   GT_CNS (0x100)  ==>>      GT_AND   GT_CNS (0)
-                //             /    \                             /    \
-                //          andOp1  GT_CNS (0x100)             andOp1  GT_CNS (0x100)
-                //
-                // We will mark the GT_AND node as contained if the tree is an equality compare with zero.
-                // Additionally, when we do this we also allow for a contained memory operand for "andOp1".
-                //
                 bool isEqualityCompare = (tree->gtOper == GT_EQ || tree->gtOper == GT_NE);
 
-                if (isEqualityCompare && (op1->OperGet() == GT_AND))
-                {
-                    GenTreePtr andOp2 = op1->gtOp.gtOp2;
-                    if (IsContainableImmed(op1, andOp2))
-                    {
-                        ssize_t andOp2CnsVal = andOp2->AsIntConCommon()->IconValue();
-                        ssize_t relOp2CnsVal = op2->AsIntConCommon()->IconValue();
-
-                        if ((relOp2CnsVal == andOp2CnsVal) && isPow2(andOp2CnsVal))
-                        {
-                            // We have a single bit test, so now we can change the
-                            // tree into the alternative form,
-                            // so that we can generate a test instruction.
-
-                            // Reverse the equality comparison
-                            tree->SetOperRaw((tree->gtOper == GT_EQ) ? GT_NE : GT_EQ);
-
-                            // Change the relOp2CnsVal to zero
-                            relOp2CnsVal = 0;
-                            op2->AsIntConCommon()->SetIconValue(0);
-                        }
-
-                        // Now do we have a equality compare with zero?
-                        //
-                        if (relOp2CnsVal == 0)
-                        {
-                            // Note that child nodes must be made contained before parent nodes
-
-                            // Check for a memory operand for op1 with the test instruction
-                            //
-                            GenTreePtr andOp1 = op1->gtOp.gtOp1;
-                            if (andOp1->isMemoryOp())
-                            {
-                                // If the type of value memoryOp (andOp1) is not the same as the type of constant
-                                // (andOp2) check to see whether it is safe to mark AndOp1 as contained.  For e.g. in
-                                // the following case it is not safe to mark andOp1 as contained
-                                //    AndOp1 = signed byte and andOp2 is an int constant of value 512.
-                                //
-                                // If it is safe, we update the type and value of andOp2 to match with andOp1.
-                                bool containable = (andOp1->TypeGet() == op1->TypeGet());
-                                if (!containable)
-                                {
-                                    ssize_t newIconVal = 0;
-
-                                    switch (andOp1->TypeGet())
-                                    {
-                                        default:
-                                            break;
-                                        case TYP_BYTE:
-                                            newIconVal  = (signed char)andOp2CnsVal;
-                                            containable = FitsIn<signed char>(andOp2CnsVal);
-                                            break;
-                                        case TYP_BOOL:
-                                        case TYP_UBYTE:
-                                            newIconVal  = andOp2CnsVal & 0xFF;
-                                            containable = true;
-                                            break;
-                                        case TYP_SHORT:
-                                            newIconVal  = (signed short)andOp2CnsVal;
-                                            containable = FitsIn<signed short>(andOp2CnsVal);
-                                            break;
-                                        case TYP_CHAR:
-                                            newIconVal  = andOp2CnsVal & 0xFFFF;
-                                            containable = true;
-                                            break;
-                                        case TYP_INT:
-                                            newIconVal  = (INT32)andOp2CnsVal;
-                                            containable = FitsIn<INT32>(andOp2CnsVal);
-                                            break;
-                                        case TYP_UINT:
-                                            newIconVal  = andOp2CnsVal & 0xFFFFFFFF;
-                                            containable = true;
-                                            break;
-
-#ifdef _TARGET_64BIT_
-                                        case TYP_LONG:
-                                            newIconVal  = (INT64)andOp2CnsVal;
-                                            containable = true;
-                                            break;
-                                        case TYP_ULONG:
-                                            newIconVal  = (UINT64)andOp2CnsVal;
-                                            containable = true;
-                                            break;
-#endif //_TARGET_64BIT_
-                                    }
-
-                                    if (containable)
-                                    {
-                                        andOp2->gtType = andOp1->TypeGet();
-                                        andOp2->AsIntConCommon()->SetIconValue(newIconVal);
-                                    }
-                                }
-
-                                // Mark the 'andOp1' memory operand as contained
-                                // Note that for equality comparisons we don't need
-                                // to deal with any signed or unsigned issues.
-                                if (containable)
-                                {
-                                    MakeSrcContained(op1, andOp1);
-                                }
-                            }
-                            // Mark the 'op1' (the GT_AND) operand as contained
-                            MakeSrcContained(tree, op1);
-                            op1IsMadeContained = true;
-
-                            // During Codegen we will now generate "test andOp1, andOp2CnsVal"
-                        }
-                    }
-                }
-                else if (op1->OperGet() == GT_CAST)
+                if (op1->OperGet() == GT_CAST)
                 {
                     // If the op1 is a cast operation, and cast type is one byte sized unsigned type,
                     // we can directly use the number in register, instead of doing an extra cast step.

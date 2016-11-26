@@ -1969,6 +1969,53 @@ GenTree* Lowering::LowerTailCallViaHelper(GenTreeCall* call, GenTree* callTarget
 //
 void Lowering::LowerCompare(GenTree* cmp)
 {
+	if ((cmp->OperGet() == GT_GT) && ((cmp->gtFlags & GTF_UNSIGNED) != 0) && cmp->gtGetOp2()->IsIntegralConst(0))
+	{
+		cmp->SetOperRaw(GT_NE);
+	}
+
+	if ((cmp->OperGet() == GT_EQ || cmp->OperGet() == GT_NE)
+		&& cmp->gtGetOp1()->OperGet() == GT_AND 
+		&& cmp->gtGetOp2()->IsIntegralConst())
+	{
+		GenTree* and = cmp->gtGetOp1();
+
+		if (!cmp->gtGetOp2()->IsIntegralConst(0))
+		{
+			size_t c = static_cast<size_t>(cmp->gtGetOp2()->AsIntConCommon()->IconValue());
+
+			if (isPow2(c) && and->gtGetOp2()->IsIntegralConst(c))
+			{
+				cmp->gtGetOp2()->AsIntConCommon()->SetIconValue(0);
+			}
+		}
+
+		if (cmp->gtGetOp2()->IsIntegralConst(0))
+		{
+			if (and->gtGetOp2()->IsIntegralConst())
+			{
+				size_t mask = static_cast<size_t>(and->gtGetOp2()->AsIntConCommon()->IconValue());
+				LIR::Use cmpUse;
+
+				if (isPow2(mask) && BlockRange().TryGetUse(cmp, &cmpUse) && cmpUse.User()->OperGet() != GT_JTRUE)
+				{
+					and->SetOperRaw(GT_RSZ);
+					and->gtGetOp2()->AsIntConCommon()->SetIconValue(genLog2(mask));
+
+					cmp->SetOperRaw(GT_AND);
+					cmp->gtGetOp2()->AsIntConCommon()->SetIconValue(1);
+				}
+                else
+                {
+                    cmp->SetOperRaw(cmp->OperGet() == GT_EQ ? GT_TEST_EQ : GT_TEST_NE);
+                    cmp->gtOp.gtOp1 = and->gtGetOp1();
+                    cmp->gtOp.gtOp2 = and->gtGetOp2();
+                    BlockRange().Remove(and);
+                }
+			}
+		}
+	}
+
 #ifndef _TARGET_64BIT_
     if (cmp->gtGetOp1()->TypeGet() != TYP_LONG)
     {

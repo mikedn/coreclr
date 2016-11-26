@@ -198,6 +198,7 @@ private:
     void TreeNodeInfoInitShiftRotate(GenTree* tree);
     void TreeNodeInfoInitCall(GenTreeCall* call);
     void TreeNodeInfoInitCmp(GenTreePtr tree);
+    void TreeNodeInfoInitTest(GenTreePtr tree);
     void TreeNodeInfoInitStructArg(GenTreePtr structArg);
     void TreeNodeInfoInitBlockStore(GenTreeBlk* blkNode);
     void TreeNodeInfoInitLogicalOp(GenTree* tree);
