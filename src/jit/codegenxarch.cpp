@@ -1781,6 +1781,8 @@ void CodeGen::genCodeForTreeNode(GenTreePtr treeNode)
         case GT_LE:
         case GT_GE:
         case GT_GT:
+        case GT_TEST_EQ:
+        case GT_TEST_NE:
         {
             // TODO-XArch-CQ: Check if we can use the currently set flags.
             // TODO-XArch-CQ: Check for the case where we can simply transfer the carry bit to a register
@@ -6138,7 +6140,7 @@ void CodeGen::genCompareInt(GenTreePtr treeNode)
 
     // By default we use an int32 sized cmp instruction
     //
-    ins               = INS_cmp;
+    ins               = ((treeNode->OperGet() == GT_TEST_EQ) || (treeNode->OperGet() == GT_TEST_NE)) ? INS_test : INS_cmp;
     var_types cmpType = TYP_INT;
 
     // In the if/then/else statement below we may change the
