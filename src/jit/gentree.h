@@ -1071,6 +1071,17 @@ public:
         }
     }
 
+    bool OperIs(genTreeOps oper)
+    {
+        return OperGet() == oper;
+    }
+
+    template <typename... T>
+    bool OperIs(genTreeOps oper, T... rest)
+    {
+        return OperIs(oper) || OperIs(rest...);
+    }
+
     static bool OperIsConst(genTreeOps gtOper)
     {
         return (OperKind(gtOper) & GTK_CONST) != 0;
