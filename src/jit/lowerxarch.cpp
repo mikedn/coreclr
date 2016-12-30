@@ -331,6 +331,8 @@ void Lowering::TreeNodeInfoInit(GenTree* tree)
 
         case GT_JTRUE:
         {
+            unreached();
+
             info->srcCount = 0;
             info->dstCount = 0;
 
@@ -407,11 +409,6 @@ void Lowering::TreeNodeInfoInit(GenTree* tree)
 #endif // FEATURE_SIMD
         }
         break;
-
-        case GT_JCC:
-            info->srcCount = 0;
-            info->dstCount = 0;
-            break;
 
         case GT_JMP:
             info->srcCount = 0;
@@ -602,7 +599,25 @@ void Lowering::TreeNodeInfoInit(GenTree* tree)
         case GT_GT:
         case GT_TEST_EQ:
         case GT_TEST_NE:
+            unreached();
             TreeNodeInfoInitCmp(tree);
+            break;
+
+        case GT_ICMP:
+        case GT_TEST:
+            ccTreeNodeInfoInitICMP(tree);
+            break;
+
+        case GT_FCMP:
+            ccTreeNodeInfoInitFCMP(tree);
+            break;
+
+        case GT_SETCC:
+            ccTreeNodeInfoInitSETCC(tree->AsCC());
+            break;
+
+        case GT_JCC:
+            ccTreeNodeInfoInitJCC(tree->AsCC());
             break;
 
         case GT_CKFINITE:
@@ -4375,7 +4390,7 @@ bool Lowering::IsContainableImmed(GenTree* parentNode, GenTree* childNode)
 GenTree* Lowering::PreferredRegOptionalOperand(GenTree* tree)
 {
     assert(GenTree::OperIsBinary(tree->OperGet()));
-    assert(tree->OperIsCommutative() || tree->OperIsCompare());
+    assert(tree->OperIsCommutative() || tree->OperIsCompare() || tree->OperIs(GT_ICMP, GT_TEST));
 
     GenTree* op1         = tree->gtGetOp1();
     GenTree* op2         = tree->gtGetOp2();
@@ -4537,6 +4552,96 @@ bool Lowering::ExcludeNonByteableRegisters(GenTree* tree)
     }
 }
 #endif // _TARGET_X86_
+
+void Lowering::ccTreeNodeInfoInitICMP(GenTree* cmp)
+{
+    TreeNodeInfo* info = &(cmp->gtLsraInfo);
+    info->srcCount     = 2;
+    info->dstCount     = 0;
+
+    GenTree*  op1     = cmp->gtGetOp1();
+    GenTree*  op2     = cmp->gtGetOp2();
+    var_types op1Type = op1->TypeGet();
+    var_types op2Type = op2->TypeGet();
+
+    if (CheckImmedAndMakeContained(cmp, op2))
+    {
+        if (op1Type == op2Type)
+        {
+            if (op1->isMemoryOp())
+            {
+                MakeSrcContained(cmp, op1);
+            }
+            else
+            {
+                SetRegOptional(op1);
+            }
+        }
+    }
+    else if (op1Type == op2Type)
+    {
+        // Note that TEST does not have a r,rm encoding like CMP has but we can still
+        // contain the second operand because the emitter maps both r,rm and rm,r to
+        // the same instruction code. This avoids the need to special case TEST here.
+        if (op2->isMemoryOp())
+        {
+            MakeSrcContained(cmp, op2);
+        }
+        else if (op1->isMemoryOp() && IsSafeToContainMem(cmp, op1))
+        {
+            MakeSrcContained(cmp, op1);
+        }
+        else if (op1->IsCnsIntOrI())
+        {
+            SetRegOptional(op2);
+        }
+        else
+        {
+            SetRegOptional(PreferredRegOptionalOperand(cmp));
+        }
+    }
+}
+
+void Lowering::ccTreeNodeInfoInitFCMP(GenTree* cmp)
+{
+    TreeNodeInfo* info = &(cmp->gtLsraInfo);
+    info->srcCount     = 2;
+    info->dstCount     = 0;
+
+    GenTree*  op1     = cmp->gtGetOp1();
+    GenTree*  op2     = cmp->gtGetOp2();
+    var_types op1Type = op1->TypeGet();
+    var_types op2Type = op2->TypeGet();
+
+    assert(op1Type == op2Type);
+
+    if (op2->IsCnsNonZeroFltOrDbl())
+    {
+        MakeSrcContained(cmp, op2);
+    }
+    else if (op2->isMemoryOp() && IsSafeToContainMem(cmp, op2))
+    {
+        MakeSrcContained(cmp, op2);
+    }
+    else
+    {
+        SetRegOptional(op2);
+    }
+}
+
+void Lowering::ccTreeNodeInfoInitSETCC(GenTreeCC* setcc)
+{
+    TreeNodeInfo* info = &(setcc->gtLsraInfo);
+    info->srcCount     = 0;
+    info->dstCount     = 1;
+}
+
+void Lowering::ccTreeNodeInfoInitJCC(GenTreeCC* jcc)
+{
+    TreeNodeInfo* info = &(jcc->gtLsraInfo);
+    info->srcCount     = 0;
+    info->dstCount     = 0;
+}
 
 #endif // _TARGET_XARCH_
 

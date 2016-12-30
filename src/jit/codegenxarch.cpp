@@ -1775,6 +1775,23 @@ void CodeGen::genCodeForTreeNode(GenTreePtr treeNode)
             genCkfinite(treeNode);
             break;
 
+        case GT_ICMP:
+        case GT_TEST:
+            ccgICMP(treeNode->AsOp());
+            break;
+
+        case GT_FCMP:
+            ccgFCMP(treeNode->AsOp());
+            break;
+
+        case GT_JCC:
+            ccgJCC(treeNode->AsCC());
+            break;
+
+        case GT_SETCC:
+            ccgSETCC(treeNode->AsCC());
+            break;
+
         case GT_EQ:
         case GT_NE:
         case GT_LT:
@@ -1784,6 +1801,8 @@ void CodeGen::genCodeForTreeNode(GenTreePtr treeNode)
         case GT_TEST_EQ:
         case GT_TEST_NE:
         {
+            unreached();
+
             // TODO-XArch-CQ: Check if we can use the currently set flags.
             // TODO-XArch-CQ: Check for the case where we can simply transfer the carry bit to a register
             //         (signed < or >= where targetReg != REG_NA)
@@ -1822,6 +1841,8 @@ void CodeGen::genCodeForTreeNode(GenTreePtr treeNode)
 
         case GT_JTRUE:
         {
+            unreached();
+
             GenTree* cmp = treeNode->gtOp.gtOp1;
 
             assert(cmp->OperIsCompare());
@@ -1872,6 +1893,7 @@ void CodeGen::genCodeForTreeNode(GenTreePtr treeNode)
         }
         break;
 
+#ifndef _TARGET_64BIT_
         case GT_JCC:
         {
             GenTreeJumpCC* jcc = treeNode->AsJumpCC();
@@ -1884,6 +1906,7 @@ void CodeGen::genCodeForTreeNode(GenTreePtr treeNode)
             inst_JMP(jumpKind, compiler->compCurBB->bbJumpDest);
         }
         break;
+#endif
 
         case GT_RETURNTRAP:
         {
@@ -8580,5 +8603,207 @@ void CodeGen::genAmd64EmitterUnitTests()
 #endif // defined(DEBUG) && defined(LATE_DISASM) && defined(_TARGET_AMD64_)
 
 #endif // _TARGET_AMD64_
+
+void CodeGen::ccgICMP(GenTreeOp* cmp)
+{
+    assert(cmp->OperIs(GT_ICMP, GT_TEST));
+
+    genConsumeOperands(cmp);
+
+    GenTree*  op1     = cmp->gtGetOp1();
+    GenTree*  op2     = cmp->gtGetOp1();
+    var_types op1Type = op1->TypeGet();
+    var_types op2Type = op2->TypeGet();
+
+    assert(!op1->isContainedIntOrIImmed());
+    assert(!varTypeIsFloating(op1Type));
+
+    instruction ins;
+
+    if (cmp->OperIs(GT_TEST_EQ, GT_TEST_NE))
+    {
+        ins = INS_test;
+    }
+    else if (!op1->isContained() && op2->IsIntegralConst(0))
+    {
+        // We're comparing a register to 0 so we can generate "test reg1, reg1"
+        // instead of the longer "cmp reg1, 0"
+        ins = INS_test;
+        op2 = op1;
+    }
+    else
+    {
+        ins = INS_cmp;
+    }
+
+    var_types type;
+
+    if (op1Type == op2Type)
+    {
+        type = op1Type;
+    }
+    else if (genTypeSize(op1Type) == genTypeSize(op2Type))
+    {
+        // If the types are different but have the same size then we'll use TYP_INT or TYP_LONG.
+        // This primarily deals with small type mixes (e.g. byte/ubyte) that need to be widened
+        // and compared as int. We should not get long type mixes here but handle that as well
+        // just in case.
+        type = genTypeSize(op1Type) == 8 ? TYP_LONG : TYP_INT;
+    }
+    else
+    {
+        // In the types are different simply use TYP_INT. This deals with small type/int type
+        // mixes (e.g. byte/short ubyte/int) that need to be widened and compared as int.
+        // Lowering is expected to handle any mixes that involve long types (e.g. int/long).
+        type = TYP_INT;
+    }
+
+    // The common type cannot be larger than the machine word size
+    assert(genTypeSize(type) <= genTypeSize(TYP_I_IMPL));
+    // The common type cannot be smaller than any of the operand types, we're probably mixing int/long
+    assert(genTypeSize(type) >= max(genTypeSize(op1Type), genTypeSize(op2Type)));
+    // TYP_UINT and TYP_ULONG should not appear here, only small types can be unsigned
+    assert(!varTypeIsUnsigned(type) || varTypeIsSmall(type));
+    // Small unsigned int types (TYP_BOOL can use anything) should use unsigned comparisons
+    // assert(!(varTypeIsSmallInt(type) && varTypeIsUnsigned(type)) || ((cmp->gtFlags & GTF_UNSIGNED) != 0));
+    // If op1 is smaller then it cannot be contained, we're probably missing a cast
+    assert((genTypeSize(op1Type) >= genTypeSize(type)) || !op1->isContainedMemoryOp());
+    // If op2 is smaller then it cannot be contained, we're probably missing a cast
+    assert((genTypeSize(op2Type) >= genTypeSize(type)) || !op2->isContainedMemoryOp());
+    // If op2 is a constant then it should fit in the common type
+    assert(!op2->IsCnsIntOrI() || genTypeValueFitsIn(op2->AsIntCon()->IconValue(), type));
+
+    getEmitter()->emitInsBinary(ins, emitTypeSize(type), op1, op2);
+}
+
+void CodeGen::ccgFCMP(GenTreeOp* cmp)
+{
+    assert(cmp->OperIs(GT_FCMP));
+
+    genConsumeOperands(cmp);
+
+    GenTree*  op1     = cmp->gtOp1;
+    GenTree*  op2     = cmp->gtOp2;
+    var_types op1Type = op1->TypeGet();
+    var_types op2Type = op2->TypeGet();
+
+    assert(varTypeIsFloating(op1Type));
+    assert(op1Type == op2Type);
+
+    getEmitter()->emitInsBinary(ins_FloatCompare(op1Type), emitTypeSize(op1Type), op1, op2);
+}
+
+const CodeGen::CgConditionDesc& CodeGen::ccgGetConditionDesc(CgCondition condition)
+{
+    // clang-format off
+    static constexpr CgConditionDesc map[]
+    {
+        { { EJ_je,  EJ_NONE }, { true,  true } },
+        { { EJ_jne, EJ_NONE }, { true,  true } },
+        { { EJ_jl,  EJ_NONE }, { true,  true } },
+        { { EJ_jle, EJ_NONE }, { true,  true } },
+        { { EJ_jge, EJ_NONE }, { true,  true } },
+        { { EJ_jg,  EJ_NONE }, { true,  true } },
+        { },
+        { },
+
+        { { EJ_je,  EJ_NONE }, { true,  true } },
+        { { EJ_jne, EJ_NONE }, { true,  true } },
+        { { EJ_jb,  EJ_NONE }, { true,  true } },
+        { { EJ_jbe, EJ_NONE }, { true,  true } },
+        { { EJ_jae, EJ_NONE }, { true,  true } },
+        { { EJ_ja,  EJ_NONE }, { true,  true } },
+        { },
+        { },
+
+        { { EJ_jpe, EJ_je   }, { false, true } },
+        { { EJ_jne, EJ_NONE }, { true,  true } },
+        { },
+        { },
+        { { EJ_jae, EJ_NONE }, { true,  true } },
+        { { EJ_ja,  EJ_NONE }, { true,  true } },
+        { },
+        { },
+
+        { { EJ_je,  EJ_NONE }, { true,  true } },
+        { { EJ_jpe, EJ_jne  }, { true,  true } },
+        { { EJ_jb,  EJ_NONE }, { true,  true } },
+        { { EJ_jbe, EJ_NONE }, { true,  true } },
+        { },
+        { },
+        { },
+        { },
+    };
+    // clang-format on
+
+    assert(condition.Value() < COUNTOF(map));
+    const CgConditionDesc& desc = map[condition.Value()];
+    assert(desc.jmpKind[0] != EJ_NONE);
+    return desc;
+}
+
+void CodeGen::ccgJCC(GenTreeCC* jcc)
+{
+    assert(jcc->OperIs(GT_JCC));
+    assert(compiler->compCurBB->bbJumpKind == BBJ_COND);
+
+    const CgConditionDesc& desc = ccgGetConditionDesc(jcc->gtCondition);
+
+    if (desc.jmpKind[1] == EJ_NONE)
+    {
+        inst_JMP(desc.jmpKind[0], compiler->compCurBB->bbJumpDest);
+    }
+    else
+    {
+        BasicBlock* jmpTarget = compiler->compCurBB->bbJumpDest;
+        BasicBlock* skipLabel = nullptr;
+
+        if (!desc.jmpToTrueLabel[0])
+        {
+            skipLabel = genCreateTempLabel();
+            jmpTarget = skipLabel;
+        }
+
+        inst_JMP(desc.jmpKind[0], jmpTarget);
+        inst_JMP(desc.jmpKind[1], compiler->compCurBB->bbJumpDest);
+
+        if (skipLabel != nullptr)
+        {
+            genDefineTempLabel(skipLabel);
+        }
+    }
+}
+
+void CodeGen::ccgSETCC(GenTreeCC* setcc)
+{
+    assert(setcc->OperIs(GT_SETCC));
+
+    regNumber dstReg = setcc->gtRegNum;
+
+    assert(genIsValidIntReg(dstReg));
+    noway_assert((genRegMask(dstReg) & RBM_BYTE_REGS) != 0);
+
+    const CgConditionDesc& desc = ccgGetConditionDesc(setcc->gtCondition);
+
+    if (desc.jmpKind[1] == EJ_NONE)
+    {
+        inst_SET(desc.jmpKind[0], dstReg);
+    }
+    else
+    {
+        inst_SET(desc.jmpToTrueLabel[0] ? desc.jmpKind[0] : emitter::emitReverseJumpKind(desc.jmpKind[0]), dstReg);
+        BasicBlock* skipLabel = genCreateTempLabel();
+        inst_JMP(desc.jmpKind[0], skipLabel);
+        inst_SET(desc.jmpKind[1], dstReg);
+        genDefineTempLabel(skipLabel);
+    }
+
+    if (genTypeSize(setcc) > sizeof(BYTE))
+    {
+        inst_RV_RV(ins_Move_Extend(TYP_UBYTE, true), dstReg, dstReg, TYP_UBYTE, emitTypeSize(TYP_UBYTE));
+    }
+
+    genProduceReg(setcc);
+}
 
 #endif // !LEGACY_BACKEND

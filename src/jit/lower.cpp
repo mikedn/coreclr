@@ -141,8 +141,7 @@ GenTree* Lowering::LowerNode(GenTree* node)
         case GT_GE:
         case GT_EQ:
         case GT_NE:
-            LowerCompare(node);
-            break;
+            return LowerCompare(node);
 
         case GT_JMP:
             LowerJmpMethod(node);
@@ -466,7 +465,7 @@ GenTree* Lowering::LowerSwitch(GenTree* node)
     // both GT_SWITCH lowering code paths.
     // This condition is of the form: if (temp > jumpTableLength - 2){ goto jumpTable[jumpTableLength - 1]; }
     GenTreePtr gtDefaultCaseCond = comp->gtNewOperNode(GT_GT, TYP_INT, comp->gtNewLclvNode(tempLclNum, tempLclType),
-                                                       comp->gtNewIconNode(jumpCnt - 2, TYP_INT));
+                                                       comp->gtNewIconNode(jumpCnt - 2, tempLclType));
 
     // Make sure we perform an unsigned comparison, just in case the switch index in 'temp'
     // is now less than zero 0 (that would also hit the default case).
@@ -1947,8 +1946,228 @@ GenTree* Lowering::LowerTailCallViaHelper(GenTreeCall* call, GenTree* callTarget
 //    - Ensures that we don't have a mix of int/long operands (XARCH specific).
 //    - Decomposes long comparisons that feed a GT_JTRUE (32 bit specific).
 
-void Lowering::LowerCompare(GenTree* cmp)
+GenTree* Lowering::LowerCompare(GenTree* cmp)
 {
+#ifdef _TARGET_XARCH_
+    assert(cmp->OperIsCompare());
+
+    GenTree* next = cmp->gtNext;
+    LIR::Use cmpUse;
+
+    if (!BlockRange().TryGetUse(cmp, &cmpUse))
+    {
+        BlockRange().Remove(cmp);
+        return next;
+    }
+
+    genTreeOps  oper;
+    CgCondition cond = CgCondition::FromCompareTree(cmp);
+
+    if (cond.IsFloat())
+    {
+        oper = GT_FCMP;
+
+        if (cond.IsUnordered() ? cmp->OperIs(GT_GT, GT_GE) : cmp->OperIs(GT_LT, GT_LE))
+        {
+            std::swap(cmp->gtOp.gtOp1, cmp->gtOp.gtOp2);
+            cmp->gtFlags ^= GTF_REVERSE_OPS;
+            cond.Swap();
+        }
+    }
+    else
+    {
+        oper = GT_ICMP;
+
+#ifdef _TARGET_AMD64_
+        if (cmp->gtGetOp1()->TypeGet() != cmp->gtGetOp2()->TypeGet())
+        {
+            bool op1Is64Bit = (genTypeSize(cmp->gtGetOp1()->TypeGet()) == 8);
+            bool op2Is64Bit = (genTypeSize(cmp->gtGetOp2()->TypeGet()) == 8);
+
+            if (op1Is64Bit != op2Is64Bit)
+            {
+                //
+                // Normally this should not happen. IL allows comparing int32 to native int but the importer
+                // automatically inserts a cast from int32 to long on 64 bit architectures. However, the JIT
+                // accidentally generates int/long comparisons internally:
+                //   - loop cloning compares int (and even small int) index limits against long constants
+                //   - switch lowering compares a 64 bit switch value against a int32 constant
+                //
+                // TODO-Cleanup: The above mentioned issues should be fixed and then the code below may be
+                // replaced with an assert or at least simplified. The special casing of constants in code
+                // below is only necessary to prevent worse code generation for switches and loop cloning.
+                //
+
+                GenTree*& longOp    = op1Is64Bit ? cmp->gtOp.gtOp1 : cmp->gtOp.gtOp2;
+                GenTree*& smallerOp = op2Is64Bit ? cmp->gtOp.gtOp1 : cmp->gtOp.gtOp2;
+
+                assert(genTypeSize(smallerOp) < 8);
+
+                if (longOp->IsCnsIntOrI() && genTypeValueFitsIn(longOp->AsIntCon()->IconValue(), smallerOp->TypeGet()))
+                {
+                    longOp->gtType = smallerOp->TypeGet();
+                }
+                else if (smallerOp->IsCnsIntOrI())
+                {
+                    smallerOp->gtType = TYP_LONG;
+                }
+                else
+                {
+                    GenTree* cast = comp->gtNewCastNode(TYP_LONG, smallerOp, TYP_LONG);
+                    smallerOp     = cast;
+                    BlockRange().InsertAfter(cast->gtGetOp1(), cast);
+                }
+            }
+        }
+#endif // _TARGET_AMD64_
+
+        if (cmp->gtGetOp2()->IsIntegralConst())
+        {
+            GenTree*       op1      = cmp->gtGetOp1();
+            var_types      op1Type  = op1->TypeGet();
+            GenTreeIntCon* op2      = cmp->gtGetOp2()->AsIntCon();
+            ssize_t        op2Value = op2->IconValue();
+
+            if (op1->isMemoryOp() && varTypeIsSmall(op1Type) && genTypeValueFitsIn(op2Value, op1Type))
+            {
+                //
+                // If op1's type is small then try to narrow op2 so it has the same type as op1.
+                // Small types are usually used by memory loads and if both compare operands have
+                // the same type then the memory load can be contained. In certain situations
+                // (e.g "cmp ubyte, 200") we also get a smaller instruction encoding.
+                //
+
+                op2->gtType = op1Type;
+            }
+            else if (op1->OperIs(GT_CAST) && !op1->gtOverflow())
+            {
+                GenTreeCast* cast       = op1->AsCast();
+                var_types    castToType = cast->CastToType();
+                GenTree*     castOp     = cast->gtGetOp1();
+
+                if (((castToType == TYP_BOOL) || (castToType == TYP_UBYTE)) && FitsIn<UINT8>(op2Value))
+                {
+                    //
+                    // Since we're going to remove the cast we need to be able to narrow the cast operand
+                    // to the cast type. This can be done safely only for certain opers (e.g AND, OR, XOR).
+                    // Some opers just can't be narrowed (e.g DIV, MUL) while other could be narrowed but
+                    // doing so would produce incorrect results (e.g. RSZ, RSH).
+                    //
+                    // The below list of handled opers is conservative but enough to handle the most common
+                    // situations. In particular this include CALL, sometimes the JIT unnecessarilly widens
+                    // the result of bool returning calls.
+                    //
+
+                    if (castOp->OperIs(GT_CALL, GT_LCL_VAR) || castOp->OperIsLogical() || castOp->isMemoryOp())
+                    {
+                        assert(!castOp->gtOverflowEx()); // Must not be an overflow checking operation
+
+                        castOp->gtType  = castToType;
+                        cmp->gtOp.gtOp1 = castOp;
+                        op2->gtType     = castToType;
+
+                        BlockRange().Remove(cast);
+                    }
+                }
+            }
+            else if (op1->OperIs(GT_AND) && cond.Is(CgCondition::EQ, CgCondition::NE))
+            {
+                //
+                // Transform ((x AND y) EQ|NE 0) into (x TEST_EQ|TEST_NE y) when possible.
+                //
+
+                GenTree* andOp1 = op1->gtGetOp1();
+                GenTree* andOp2 = op1->gtGetOp2();
+
+                if (op2Value != 0)
+                {
+                    //
+                    // If we don't have a 0 compare we can get one by transforming ((x AND mask) EQ|NE mask)
+                    // into ((x AND mask) NE|EQ 0) when mask is a single bit.
+                    //
+
+                    if (isPow2(static_cast<size_t>(op2Value)) && andOp2->IsIntegralConst(op2Value))
+                    {
+                        op2Value = 0;
+                        op2->SetIconValue(0);
+                        cond.Reverse();
+                    }
+                }
+
+                if (op2Value == 0)
+                {
+                    BlockRange().Remove(op1);
+                    BlockRange().Remove(op2);
+
+                    oper            = GT_TEST;
+                    cmp->gtOp.gtOp1 = andOp1;
+                    cmp->gtOp.gtOp2 = andOp2;
+
+                    if (andOp1->isMemoryOp() && andOp2->IsIntegralConst())
+                    {
+                        //
+                        // For "test" we only care about the bits that are set in the second operand (mask).
+                        // If the mask fits in a small type then we can narrow both operands to generate a "test"
+                        // instruction with a smaller encoding ("test" does not have a r/m32, imm8 form) and avoid
+                        // a widening load in some cases.
+                        //
+                        // For 16 bit operands we narrow only if the memory operand is already 16 bit. This matches
+                        // the behavior of a previous implementation and avoids adding more cases where we generate
+                        // 16 bit instructions that require a length changing prefix (0x66). These suffer from
+                        // significant decoder stalls on Intel CPUs.
+                        //
+                        // We could also do this for 64 bit masks that fit into 32 bit but it doesn't help.
+                        // In such cases morph narrows down the existing GT_AND by inserting a cast between it and
+                        // the memory operand so we'd need to add more code to recognize and eliminate that cast.
+                        //
+
+                        size_t mask = static_cast<size_t>(andOp2->AsIntCon()->IconValue());
+
+                        if (FitsIn<UINT8>(mask))
+                        {
+                            andOp1->gtType = TYP_UBYTE;
+                            andOp2->gtType = TYP_UBYTE;
+                        }
+                        else if (FitsIn<UINT16>(mask) && genTypeSize(andOp1) == 2)
+                        {
+                            andOp1->gtType = TYP_CHAR;
+                            andOp2->gtType = TYP_CHAR;
+                        }
+                    }
+                }
+            }
+        }
+
+        GenTree* op1 = cmp->gtGetOp1();
+        GenTree* op2 = cmp->gtGetOp2();
+
+        if (op2->IsIntegralConst(0) && cond.Is(CgCondition::EQ, CgCondition::NE) && (op1->gtNext == op2) &&
+            (op2->gtNext == cmp) && op1->OperIs(GT_ADD, GT_SUB, GT_OR, GT_XOR, GT_NEG))
+        {
+            oper = GT_NONE;
+            op1->gtFlags |= GTF_SET_FLAGS;
+            BlockRange().Remove(op2);
+        }
+    }
+
+    if ((oper == GT_ICMP) && (cmp->gtGetOp1()->TypeGet() == cmp->gtGetOp2()->TypeGet()))
+    {
+        if (varTypeIsSmall(cmp->gtGetOp1()->TypeGet()) && varTypeIsUnsigned(cmp->gtGetOp1()->TypeGet()))
+        {
+            //
+            // If both operands have the same type then codegen will use the common operand type to
+            // determine the instruction type. For small types this would result in performing a
+            // signed comparison of two small unsigned values without zero extending them to TYP_INT
+            // which is incorrect. Note that making the comparison unsigned doesn't imply that codegen
+            // has to generate a small comparison, it can still correctly generate a TYP_INT comparison.
+            //
+
+            cond.MakeUnsigned();
+        }
+    }
+
+#endif // _TARGET_XARCH_
+
 #ifndef _TARGET_64BIT_
     LIR::Use cmpUse;
 
@@ -2190,183 +2409,32 @@ void Lowering::LowerCompare(GenTree* cmp)
     }
 #endif
 
-#ifdef _TARGET_XARCH_
-#ifdef _TARGET_AMD64_
-    if (cmp->gtGetOp1()->TypeGet() != cmp->gtGetOp2()->TypeGet())
+    if (cmpUse.User()->OperIs(GT_JTRUE))
     {
-        bool op1Is64Bit = (genTypeSize(cmp->gtGetOp1()->TypeGet()) == 8);
-        bool op2Is64Bit = (genTypeSize(cmp->gtGetOp2()->TypeGet()) == 8);
-
-        if (op1Is64Bit != op2Is64Bit)
-        {
-            //
-            // Normally this should not happen. IL allows comparing int32 to native int but the importer
-            // automatically inserts a cast from int32 to long on 64 bit architectures. However, the JIT
-            // accidentally generates int/long comparisons internally:
-            //   - loop cloning compares int (and even small int) index limits against long constants
-            //   - switch lowering compares a 64 bit switch value against a int32 constant
-            //
-            // TODO-Cleanup: The above mentioned issues should be fixed and then the code below may be
-            // replaced with an assert or at least simplified. The special casing of constants in code
-            // below is only necessary to prevent worse code generation for switches and loop cloning.
-            //
-
-            GenTree*& longOp    = op1Is64Bit ? cmp->gtOp.gtOp1 : cmp->gtOp.gtOp2;
-            GenTree*& smallerOp = op2Is64Bit ? cmp->gtOp.gtOp1 : cmp->gtOp.gtOp2;
-
-            assert(genTypeSize(smallerOp) < 8);
-
-            if (longOp->IsCnsIntOrI() && genTypeValueFitsIn(longOp->AsIntCon()->IconValue(), smallerOp->TypeGet()))
-            {
-                longOp->gtType = smallerOp->TypeGet();
-            }
-            else if (smallerOp->IsCnsIntOrI())
-            {
-                smallerOp->gtType = TYP_LONG;
-            }
-            else
-            {
-                GenTree* cast = comp->gtNewCastNode(TYP_LONG, smallerOp, TYP_LONG);
-                smallerOp     = cast;
-                BlockRange().InsertAfter(cast->gtGetOp1(), cast);
-            }
-        }
+        GenTreeCC* jcc = new (comp, GT_JCC) GenTreeCC(GT_JCC, cond);
+        BlockRange().InsertBefore(cmpUse.User(), jcc);
+        BlockRange().Remove(cmpUse.User());
+        next = cmp->gtNext;
     }
-#endif // _TARGET_AMD64_
-
-    if (cmp->gtGetOp2()->IsIntegralConst())
+    else
     {
-        GenTree*       op1      = cmp->gtGetOp1();
-        var_types      op1Type  = op1->TypeGet();
-        GenTreeIntCon* op2      = cmp->gtGetOp2()->AsIntCon();
-        ssize_t        op2Value = op2->IconValue();
-
-        if (op1->isMemoryOp() && varTypeIsSmall(op1Type) && genTypeValueFitsIn(op2Value, op1Type))
-        {
-            //
-            // If op1's type is small then try to narrow op2 so it has the same type as op1.
-            // Small types are usually used by memory loads and if both compare operands have
-            // the same type then the memory load can be contained. In certain situations
-            // (e.g "cmp ubyte, 200") we also get a smaller instruction encoding.
-            //
-
-            op2->gtType = op1Type;
-        }
-        else if (op1->OperIs(GT_CAST) && !op1->gtOverflow())
-        {
-            GenTreeCast* cast       = op1->AsCast();
-            var_types    castToType = cast->CastToType();
-            GenTree*     castOp     = cast->gtGetOp1();
-
-            if (((castToType == TYP_BOOL) || (castToType == TYP_UBYTE)) && FitsIn<UINT8>(op2Value))
-            {
-                //
-                // Since we're going to remove the cast we need to be able to narrow the cast operand
-                // to the cast type. This can be done safely only for certain opers (e.g AND, OR, XOR).
-                // Some opers just can't be narrowed (e.g DIV, MUL) while other could be narrowed but
-                // doing so would produce incorrect results (e.g. RSZ, RSH).
-                //
-                // The below list of handled opers is conservative but enough to handle the most common
-                // situations. In particular this include CALL, sometimes the JIT unnecessarilly widens
-                // the result of bool returning calls.
-                //
-
-                if (castOp->OperIs(GT_CALL, GT_LCL_VAR) || castOp->OperIsLogical() || castOp->isMemoryOp())
-                {
-                    assert(!castOp->gtOverflowEx()); // Must not be an overflow checking operation
-
-                    castOp->gtType  = castToType;
-                    cmp->gtOp.gtOp1 = castOp;
-                    op2->gtType     = castToType;
-
-                    BlockRange().Remove(cast);
-                }
-            }
-        }
-        else if (op1->OperIs(GT_AND) && cmp->OperIs(GT_EQ, GT_NE))
-        {
-            //
-            // Transform ((x AND y) EQ|NE 0) into (x TEST_EQ|TEST_NE y) when possible.
-            //
-
-            GenTree* andOp1 = op1->gtGetOp1();
-            GenTree* andOp2 = op1->gtGetOp2();
-
-            if (op2Value != 0)
-            {
-                //
-                // If we don't have a 0 compare we can get one by transforming ((x AND mask) EQ|NE mask)
-                // into ((x AND mask) NE|EQ 0) when mask is a single bit.
-                //
-
-                if (isPow2(static_cast<size_t>(op2Value)) && andOp2->IsIntegralConst(op2Value))
-                {
-                    op2Value = 0;
-                    op2->SetIconValue(0);
-                    cmp->SetOperRaw(GenTree::ReverseRelop(cmp->OperGet()));
-                }
-            }
-
-            if (op2Value == 0)
-            {
-                BlockRange().Remove(op1);
-                BlockRange().Remove(op2);
-
-                cmp->SetOperRaw(cmp->OperIs(GT_EQ) ? GT_TEST_EQ : GT_TEST_NE);
-                cmp->gtOp.gtOp1 = andOp1;
-                cmp->gtOp.gtOp2 = andOp2;
-
-                if (andOp1->isMemoryOp() && andOp2->IsIntegralConst())
-                {
-                    //
-                    // For "test" we only care about the bits that are set in the second operand (mask).
-                    // If the mask fits in a small type then we can narrow both operands to generate a "test"
-                    // instruction with a smaller encoding ("test" does not have a r/m32, imm8 form) and avoid
-                    // a widening load in some cases.
-                    //
-                    // For 16 bit operands we narrow only if the memory operand is already 16 bit. This matches
-                    // the behavior of a previous implementation and avoids adding more cases where we generate
-                    // 16 bit instructions that require a length changing prefix (0x66). These suffer from
-                    // significant decoder stalls on Intel CPUs.
-                    //
-                    // We could also do this for 64 bit masks that fit into 32 bit but it doesn't help.
-                    // In such cases morph narrows down the existing GT_AND by inserting a cast between it and
-                    // the memory operand so we'd need to add more code to recognize and eliminate that cast.
-                    //
-
-                    size_t mask = static_cast<size_t>(andOp2->AsIntCon()->IconValue());
-
-                    if (FitsIn<UINT8>(mask))
-                    {
-                        andOp1->gtType = TYP_UBYTE;
-                        andOp2->gtType = TYP_UBYTE;
-                    }
-                    else if (FitsIn<UINT16>(mask) && genTypeSize(andOp1) == 2)
-                    {
-                        andOp1->gtType = TYP_CHAR;
-                        andOp2->gtType = TYP_CHAR;
-                    }
-                }
-            }
-        }
+        GenTreeCC* setcc = new (comp, GT_SETCC) GenTreeCC(GT_SETCC, cond, cmp->TypeGet());
+        BlockRange().InsertAfter(cmp, setcc);
+        cmpUse.ReplaceWith(comp, setcc);
+        next = setcc->gtNext;
     }
 
-    if (cmp->gtGetOp1()->TypeGet() == cmp->gtGetOp2()->TypeGet())
+    if (oper == GT_NONE)
     {
-        if (varTypeIsSmall(cmp->gtGetOp1()->TypeGet()) && varTypeIsUnsigned(cmp->gtGetOp1()->TypeGet()))
-        {
-            //
-            // If both operands have the same type then codegen will use the common operand type to
-            // determine the instruction type. For small types this would result in performing a
-            // signed comparison of two small unsigned values without zero extending them to TYP_INT
-            // which is incorrect. Note that making the comparison unsigned doesn't imply that codegen
-            // has to generate a small comparison, it can still correctly generate a TYP_INT comparison.
-            //
-
-            cmp->gtFlags |= GTF_UNSIGNED;
-        }
+        BlockRange().Remove(cmp);
     }
-#endif // _TARGET_XARCH_
+    else
+    {
+        cmp->SetOperRaw(oper);
+        cmp->gtType = TYP_VOID;
+    }
+
+    return next;
 }
 
 // Lower "jmp <method>" tail call to insert PInvoke method epilog if required.

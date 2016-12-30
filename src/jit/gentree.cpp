@@ -366,7 +366,7 @@ void GenTree::InitNodeSize()
     static_assert_no_msg(sizeof(GenTreeLclVar)       <= TREE_NODE_SZ_SMALL);
     static_assert_no_msg(sizeof(GenTreeLclFld)       <= TREE_NODE_SZ_SMALL);
     static_assert_no_msg(sizeof(GenTreeRegVar)       <= TREE_NODE_SZ_SMALL);
-    static_assert_no_msg(sizeof(GenTreeJumpCC)       <= TREE_NODE_SZ_SMALL);
+    static_assert_no_msg(sizeof(GenTreeCC)           <= TREE_NODE_SZ_SMALL);
     static_assert_no_msg(sizeof(GenTreeCast)         <= TREE_NODE_SZ_LARGE); // *** large node
     static_assert_no_msg(sizeof(GenTreeBox)          <= TREE_NODE_SZ_LARGE); // *** large node
     static_assert_no_msg(sizeof(GenTreeField)        <= TREE_NODE_SZ_LARGE); // *** large node
@@ -3462,8 +3462,8 @@ GenTreePtr Compiler::gtReverseCond(GenTree* tree)
     }
     else if (tree->OperGet() == GT_JCC)
     {
-        GenTreeJumpCC* jcc = tree->AsJumpCC();
-        jcc->gtCondition   = GenTree::ReverseRelop(jcc->gtCondition);
+        GenTreeCC* jcc = tree->AsCC();
+        jcc->gtCondition.Reverse();
     }
     else
     {
@@ -11109,7 +11109,8 @@ void Compiler::gtDispLeaf(GenTree* tree, IndentStack* indentStack)
             break;
 
         case GT_JCC:
-            printf(" cond=%s", GenTree::NodeName(tree->AsJumpCC()->gtCondition));
+        case GT_SETCC:
+            printf(" cond=%s", tree->AsCC()->gtCondition.Name());
             break;
 
         default:
@@ -15768,7 +15769,11 @@ bool GenTree::isContained() const
     {
         case GT_STOREIND:
         case GT_JTRUE:
+        case GT_TEST:
+        case GT_ICMP:
+        case GT_FCMP:
         case GT_JCC:
+        case GT_SETCC:
         case GT_RETURN:
         case GT_RETFILT:
         case GT_STORE_LCL_FLD:

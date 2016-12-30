@@ -59,6 +59,21 @@ void genCompareInt(GenTreePtr treeNode);
 void genCompareLong(GenTreePtr treeNode);
 #endif
 
+#if defined(_TARGET_XARCH_)
+struct CgConditionDesc
+{
+    emitJumpKind jmpKind[2];
+    bool         jmpToTrueLabel[2];
+};
+
+static const CgConditionDesc& ccgGetConditionDesc(CgCondition condition);
+
+void ccgICMP(GenTreeOp* cmp);
+void ccgFCMP(GenTreeOp* cmp);
+void ccgSETCC(GenTreeCC* setcc);
+void ccgJCC(GenTreeCC* jcc);
+#endif
+
 #ifdef FEATURE_SIMD
 enum SIMDScalarMoveType
 {
