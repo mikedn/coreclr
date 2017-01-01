@@ -210,6 +210,7 @@ GTNODE(JTRUE            , "jmpTrue"      ,GenTreeOp          ,0,GTK_UNOP|GTK_NOV
 GTNODE(TEST             , "test"         ,GenTreeOp          ,0,GTK_BINOP|GTK_NOVALUE)
 GTNODE(ICMP              ,"icmp"         ,GenTreeOp          ,0,GTK_BINOP|GTK_NOVALUE)
 GTNODE(FCMP             , "fcmp"         ,GenTreeOp          ,0,GTK_BINOP|GTK_NOVALUE)
+GTNODE(SELCC            , "selcc"        ,GenTreeOpCC        ,0,GTK_BINOP|GTK_EXOP)
 GTNODE(SETCC            , "setcc"        ,GenTreeCC          ,0,GTK_LEAF|GTK_EXOP)
 GTNODE(JCC              , "jcc"          ,GenTreeCC          ,0,GTK_LEAF|GTK_NOVALUE|GTK_EXOP)
 

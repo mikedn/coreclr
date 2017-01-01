@@ -70,6 +70,7 @@ static const CgConditionDesc& ccgGetConditionDesc(CgCondition condition);
 
 void ccgICMP(GenTreeOp* cmp);
 void ccgFCMP(GenTreeOp* cmp);
+void ccgSELCC(GenTreeOpCC* selcc);
 void ccgSETCC(GenTreeCC* setcc);
 void ccgJCC(GenTreeCC* jcc);
 #endif

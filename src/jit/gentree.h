@@ -5019,6 +5019,22 @@ struct GenTreeCC final : public GenTree
 #endif // DEBUGGABLE_GENTREE
 };
 
+struct GenTreeOpCC final : public GenTreeOp
+{
+    CgCondition gtCondition;
+
+    GenTreeOpCC(genTreeOps oper, CgCondition condition, var_types type, GenTree* op1, GenTree* op2)
+        : GenTreeOp(oper, type, op1, op2 DEBUGARG(/*largeNode*/ FALSE)), gtCondition(condition)
+    {
+    }
+
+#if DEBUGGABLE_GENTREE
+    GenTreeOpCC() : GenTreeOp()
+    {
+    }
+#endif // DEBUGGABLE_GENTREE
+};
+
 //------------------------------------------------------------------------
 // Deferred inline functions of GenTree -- these need the subtypes above to
 // be defined already.

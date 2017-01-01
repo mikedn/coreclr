@@ -196,6 +196,7 @@ private:
 
     void ccTreeNodeInfoInitICMP(GenTree* cmp);
     void ccTreeNodeInfoInitFCMP(GenTree* cmp);
+    void ccTreeNodeInfoInitSELCC(GenTreeOpCC* selcc);
     void ccTreeNodeInfoInitSETCC(GenTreeCC* setcc);
     void ccTreeNodeInfoInitJCC(GenTreeCC* jcc);
 #endif // defined(_TARGET_XARCH_)

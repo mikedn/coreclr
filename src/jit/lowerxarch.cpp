@@ -620,6 +620,10 @@ void Lowering::TreeNodeInfoInit(GenTree* tree)
             ccTreeNodeInfoInitJCC(tree->AsCC());
             break;
 
+        case GT_SELCC:
+            ccTreeNodeInfoInitSELCC(tree->AsOpCC());
+            break;
+
         case GT_CKFINITE:
             info->srcCount         = 1;
             info->dstCount         = 1;
@@ -4622,6 +4626,33 @@ void Lowering::ccTreeNodeInfoInitFCMP(GenTree* cmp)
     else if (op2->isMemoryOp() && IsSafeToContainMem(cmp, op2))
     {
         MakeSrcContained(cmp, op2);
+    }
+    else
+    {
+        SetRegOptional(op2);
+    }
+}
+
+void Lowering::ccTreeNodeInfoInitSELCC(GenTreeOpCC* selcc)
+{
+    TreeNodeInfo* info = &(selcc->gtLsraInfo);
+    info->srcCount     = 2;
+    info->dstCount     = 1;
+
+    GenTree* op2 = selcc->gtGetOp2();
+
+    if (op2->isMemoryOp())
+    {
+        //
+        // There's no byte-sized CMOV so we can't contain a memory operand unless it's
+        // TYP_INT (and TYP_LONG on x64). There's a word-sized CMOV but to use it we
+        // we would likely need to widen the result of CMOV the same way a GT_IND does.
+        //
+
+        if (varTypeIsIntOrI(op2))
+        {
+            MakeSrcContained(selcc, op2);
+        }
     }
     else
     {
