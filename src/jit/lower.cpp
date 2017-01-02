@@ -128,6 +128,9 @@ GenTree* Lowering::LowerNode(GenTree* node)
         case GT_MOD:
             return LowerSignedDivOrMod(node);
 
+        case GT_JTRUE:
+            return LowerJTrue(node);
+
         case GT_SWITCH:
             return LowerSwitch(node);
 
@@ -273,6 +276,541 @@ GenTree* Lowering::LowerNode(GenTree* node)
     }
 
     return node->gtNext;
+}
+
+GenTree* Lowering::TryIfConversion(GenTreeCC* jcc)
+{
+    struct Utils
+    {
+        static GenTree* FirstActualNode(BasicBlock* block)
+        {
+            GenTree* first = block->firstNode();
+
+            while ((first != nullptr) && ((first->OperIs(GT_STORE_LCL_VAR) && first->gtOp.gtOp1->OperIs(GT_PHI)) ||
+                                          (first->OperIs(GT_IL_OFFSET))))
+            {
+                first = first->gtNext;
+            }
+
+            return first;
+        }
+    };
+
+    GenTree* next = jcc->gtNext;
+
+    if (jcc->gtCondition.IsFloat())
+    {
+        return jcc;
+    }
+
+    BasicBlock* thenBlock = m_block->bbNext;
+    BasicBlock* elseBlock = m_block->bbJumpDest;
+    BasicBlock* tailBlock;
+
+    if (thenBlock->lastNode() == nullptr)
+    {
+        // Sometimes we get empty blocks!?
+        return jcc;
+    }
+
+    if (thenBlock->bbJumpKind == BBJ_NONE && thenBlock->bbNext == m_block->bbJumpDest)
+    {
+        // half hammock
+        tailBlock = thenBlock->bbNext;
+
+        if (comp->fgInDifferentRegions(m_block, thenBlock))
+        {
+            return jcc;
+        }
+
+        if (!BasicBlock::sameEHRegion(m_block, thenBlock))
+        {
+            return jcc;
+        }
+
+        GenTreeLclVar* thenStore = nullptr;
+
+        if (thenBlock->lastNode()->OperIs(GT_STORE_LCL_VAR))
+        {
+            thenStore = thenBlock->lastNode()->AsLclVar();
+        }
+
+        if (thenStore == nullptr)
+        {
+            return jcc;
+        }
+
+        if (!varTypeIsIntOrI(thenStore))
+        {
+            return jcc;
+        }
+
+        GenTree*       thenSrc   = thenStore->gtGetOp1();
+        GenTreeIntCon* thenConst = nullptr;
+        GenTreeLclVar* thenLcl   = nullptr;
+
+        GenTree* thenFirst = Utils::FirstActualNode(thenBlock);
+
+        if (thenSrc != thenFirst || thenStore->gtPrev != thenSrc)
+        {
+            return jcc;
+        }
+
+        if (thenSrc->OperIs(GT_CNS_INT))
+        {
+            thenConst = thenSrc->AsIntCon();
+        }
+        else if (thenSrc->OperIs(GT_LCL_VAR))
+        {
+            thenLcl = thenSrc->AsLclVar();
+        }
+
+        LIR::Range& thenRange = LIR::AsRange(thenBlock);
+
+        if (thenLcl != nullptr || thenConst != nullptr)
+        {
+            GenTree* oldSrc = comp->gtNewLclvNode(thenStore->GetLclNum(), thenStore->TypeGet());
+            GenTree* newSrc;
+
+            if (thenLcl != nullptr)
+            {
+                newSrc          = comp->gtNewLclvNode(thenLcl->GetLclNum(), thenLcl->TypeGet());
+                newSrc->gtFlags = thenLcl->gtFlags;
+            }
+            else
+            {
+                newSrc          = comp->gtNewIconNode(thenConst->IconValue(), thenConst->TypeGet());
+                newSrc->gtFlags = thenConst->gtFlags;
+            }
+
+            GenTreeOpCC* select =
+                new (comp, GT_SELCC) GenTreeOpCC(GT_SELCC, jcc->gtCondition, thenStore->TypeGet(), oldSrc, newSrc);
+            select->gtCondition.Reverse();
+
+            unsigned flags = thenStore->gtFlags;
+            thenStore      = new (comp, thenStore->OperGet())
+                GenTreeLclVar(thenStore->OperGet(), thenStore->TypeGet(), thenStore->AsLclVarCommon()->GetLclNum(), -1);
+            thenStore->gtFlags    = flags;
+            thenStore->gtOp.gtOp1 = select;
+
+            BlockRange().InsertBefore(jcc, oldSrc, newSrc, select, thenStore);
+            BlockRange().Remove(jcc);
+
+            comp->lvaIncRefCnts(thenStore);
+
+            if (thenLcl != nullptr)
+            {
+                comp->lvaIncRefCnts(thenLcl);
+            }
+
+            comp->lvaIncRefCnts(thenStore);
+            next = oldSrc;
+
+            m_block->bbJumpKind = BBJ_ALWAYS;
+            m_block->bbJumpDest = tailBlock;
+
+            comp->fgAddRefPred(tailBlock, m_block);
+            comp->fgRemoveRefPred(thenBlock, m_block);
+
+            if (newSrc->IsIntegralConst(0))
+            {
+                BlockRange().Remove(newSrc);
+                // BlockRange().InsertBefore(cmp, newSrc);
+            }
+
+            return select;
+        }
+
+        return jcc;
+    }
+
+    if (elseBlock->lastNode() == nullptr)
+    {
+        // Sometimes we get empty blocks!?
+        return jcc;
+    }
+
+    if (thenBlock->bbJumpKind == BBJ_RETURN && elseBlock->bbJumpKind == BBJ_RETURN)
+    {
+        tailBlock = nullptr;
+    }
+    else if (thenBlock->bbJumpKind == BBJ_ALWAYS && elseBlock->bbJumpKind == BBJ_ALWAYS &&
+             thenBlock->bbJumpDest == elseBlock->bbJumpDest)
+    {
+        tailBlock = thenBlock->bbJumpDest;
+    }
+    else if (thenBlock->bbJumpKind == BBJ_ALWAYS && elseBlock->bbJumpKind == BBJ_NONE &&
+             thenBlock->bbJumpDest == elseBlock->bbNext)
+    {
+        tailBlock = thenBlock->bbJumpDest;
+    }
+    else if (thenBlock->bbJumpKind == BBJ_NONE && elseBlock->bbJumpKind == BBJ_ALWAYS &&
+             thenBlock->bbNext == elseBlock->bbJumpDest)
+    {
+        tailBlock = thenBlock->bbNext;
+    }
+    else
+    {
+        return jcc;
+    }
+
+    if (comp->fgInDifferentRegions(m_block, thenBlock) || comp->fgInDifferentRegions(m_block, elseBlock))
+    {
+        return jcc;
+    }
+
+    if (!BasicBlock::sameEHRegion(m_block, thenBlock) || !BasicBlock::sameEHRegion(m_block, elseBlock))
+    {
+        return jcc;
+    }
+
+    GenTreeLclVar* thenStoreLcl = nullptr;
+    GenTreeLclVar* elseStoreLcl = nullptr;
+    GenTree*       thenRet      = nullptr;
+    GenTree*       elseRet      = nullptr;
+    GenTree*       thenSrc      = nullptr;
+    GenTree*       elseSrc      = nullptr;
+    GenTreeIntCon* thenConst    = nullptr;
+    GenTreeLclVar* thenLcl      = nullptr;
+    GenTreeIntCon* elseConst    = nullptr;
+    GenTreeLclVar* elseLcl      = nullptr;
+
+    if (thenBlock->lastNode()->OperIs(GT_STORE_LCL_VAR))
+    {
+        thenStoreLcl = thenBlock->lastNode()->AsLclVar();
+        thenSrc      = thenStoreLcl->gtGetOp1();
+    }
+    else if (thenBlock->lastNode()->OperIs(GT_RETURN))
+    {
+        thenRet = thenBlock->lastNode();
+        thenSrc = thenRet->gtGetOp1();
+    }
+
+    if (elseBlock->lastNode()->OperIs(GT_STORE_LCL_VAR))
+    {
+        elseStoreLcl = elseBlock->lastNode()->AsLclVar();
+        elseSrc      = elseStoreLcl->gtGetOp1();
+    }
+    else if (elseBlock->lastNode()->OperIs(GT_RETURN))
+    {
+        elseRet = elseBlock->lastNode();
+        elseSrc = elseRet->gtGetOp1();
+    }
+
+    if (thenStoreLcl != nullptr && elseStoreLcl != nullptr && thenStoreLcl->GetLclNum() == elseStoreLcl->GetLclNum())
+    {
+    }
+    else if (thenRet != nullptr && elseRet != nullptr)
+    {
+    }
+    else
+    {
+        return jcc;
+    }
+
+    GenTree* thenFirst = Utils::FirstActualNode(thenBlock);
+    GenTree* elseFirst = Utils::FirstActualNode(elseBlock);
+
+    if (thenSrc != thenFirst || elseSrc != elseFirst)
+    {
+        return jcc;
+    }
+
+    if (thenSrc->OperIs(GT_CNS_INT))
+    {
+        thenConst = thenSrc->AsIntCon();
+    }
+    else if (thenSrc->OperIs(GT_LCL_VAR))
+    {
+        thenLcl = thenSrc->AsLclVar();
+    }
+
+    if (elseSrc->OperIs(GT_CNS_INT))
+    {
+        elseConst = elseSrc->AsIntCon();
+    }
+    else if (elseSrc->OperIs(GT_LCL_VAR))
+    {
+        elseLcl = elseSrc->AsLclVar();
+    }
+
+    GenTree* thenStore = thenStoreLcl ? thenStoreLcl : thenRet;
+    GenTree* elseStore = elseStoreLcl ? elseStoreLcl : elseRet;
+
+    if (!varTypeIsIntOrI(thenStore))
+    {
+        return jcc;
+    }
+
+    LIR::Range& thenRange = LIR::AsRange(thenBlock);
+    LIR::Range& elseRange = LIR::AsRange(elseBlock);
+
+    if (thenConst != nullptr && elseConst != nullptr)
+    {
+        size_t      falseValue = thenConst->IconValue();
+        size_t      trueValue  = elseConst->IconValue();
+        CgCondition cond       = jcc->gtCondition;
+
+        if (falseValue > trueValue)
+        {
+            std::swap(falseValue, trueValue);
+            cond.Reverse();
+        }
+
+        size_t zeroOffset = 0;
+
+        if (falseValue != 0)
+        {
+            zeroOffset = falseValue;
+            falseValue = 0;
+            trueValue -= zeroOffset;
+        }
+
+        if (trueValue == -1 && falseValue == 0 && zeroOffset == 0)
+        {
+            jcc->gtCondition = cond;
+            jcc->gtType      = thenConst->TypeGet();
+
+            if (elseStore->OperIs(GT_RETURN))
+            {
+                elseStore = comp->gtNewOperNode(elseStore->OperGet(), elseStore->TypeGet(), elseStore->gtGetOp1());
+            }
+            else
+            {
+                unsigned flags = elseStore->gtFlags;
+                elseStore =
+                    new (comp, elseStore->OperGet()) GenTreeLclVar(elseStore->OperGet(), elseStore->TypeGet(),
+                                                                   elseStore->AsLclVarCommon()->GetLclNum(), -1);
+                elseStore->gtFlags = flags;
+                comp->lvaIncRefCnts(elseStore);
+            }
+
+            elseStore->gtOp.gtOp1 = jcc;
+            BlockRange().InsertBefore(jcc, elseStore);
+
+            GenTree* neg = comp->gtNewOperNode(GT_NEG, jcc->TypeGet(), jcc);
+
+            elseStore->gtOp.gtOp1 = neg;
+            BlockRange().InsertAfter(jcc, neg);
+
+            next = neg;
+
+            BlockRange().Remove(jcc);
+
+            comp->fgRemoveRefPred(thenBlock, m_block);
+            comp->fgRemoveRefPred(elseBlock, m_block);
+
+            if (tailBlock == nullptr)
+            {
+                m_block->bbJumpKind = BBJ_RETURN;
+            }
+            else
+            {
+                m_block->bbJumpKind = BBJ_ALWAYS;
+                m_block->bbJumpDest = tailBlock;
+                tailBlock->bbFlags |= BBF_JMP_TARGET;
+                comp->fgAddRefPred(tailBlock, m_block);
+            }
+
+            return next;
+        }
+
+        if (isPow2(trueValue) &&
+            ((zeroOffset == 0) || (trueValue == 1 || trueValue == 2 || trueValue == 4 || trueValue == 8)))
+        {
+            jcc->gtCondition = cond;
+            jcc->gtType      = thenConst->TypeGet();
+
+            if (elseStore->OperIs(GT_RETURN))
+            {
+                elseStore = comp->gtNewOperNode(elseStore->OperGet(), elseStore->TypeGet(), elseStore->gtGetOp1());
+            }
+            else
+            {
+                unsigned flags = elseStore->gtFlags;
+                elseStore =
+                    new (comp, elseStore->OperGet()) GenTreeLclVar(elseStore->OperGet(), elseStore->TypeGet(),
+                                                                   elseStore->AsLclVarCommon()->GetLclNum(), -1);
+                elseStore->gtFlags = flags;
+                comp->lvaIncRefCnts(elseStore);
+            }
+
+            elseStore->gtOp.gtOp1 = jcc;
+            BlockRange().InsertBefore(jcc, elseStore);
+
+            if (zeroOffset > 0)
+            {
+                if (trueValue == 1)
+                {
+                    GenTree* iz  = comp->gtNewIconNode(zeroOffset, jcc->TypeGet());
+                    GenTree* add = comp->gtNewOperNode(GT_ADD, jcc->TypeGet(), jcc, iz);
+
+                    elseStore->gtOp.gtOp1 = add;
+                    BlockRange().InsertAfter(jcc, iz, add);
+
+                    next = add;
+                }
+                else
+                {
+                    GenTree* add = new (comp, GT_LEA)
+                        GenTreeAddrMode(jcc->TypeGet(), nullptr, jcc, static_cast<unsigned>(trueValue),
+                                        static_cast<unsigned>(zeroOffset));
+
+                    elseStore->gtOp.gtOp1 = add;
+                    BlockRange().InsertAfter(jcc, add);
+
+                    next = add;
+                }
+            }
+            else if (trueValue > 1)
+            {
+                GenTree* shiftBy = comp->gtNewIconNode(genLog2(trueValue), jcc->TypeGet());
+                GenTree* shift   = comp->gtNewOperNode(GT_LSH, elseStore->TypeGet(), jcc, shiftBy);
+
+                elseStore->gtOp.gtOp1 = shift;
+                BlockRange().InsertBefore(elseStore, shiftBy, shift);
+
+                next = shift;
+            }
+
+            BlockRange().Remove(jcc);
+
+            comp->fgRemoveRefPred(thenBlock, m_block);
+            comp->fgRemoveRefPred(elseBlock, m_block);
+
+            if (tailBlock == nullptr)
+            {
+                m_block->bbJumpKind = BBJ_RETURN;
+            }
+            else
+            {
+                m_block->bbJumpKind = BBJ_ALWAYS;
+                m_block->bbJumpDest = tailBlock;
+                tailBlock->bbFlags |= BBF_JMP_TARGET;
+                comp->fgAddRefPred(tailBlock, m_block);
+            }
+
+            return next;
+        }
+    }
+
+    if ((thenLcl != nullptr || thenConst != nullptr) && (elseLcl != nullptr || elseConst != nullptr))
+    {
+        if (thenSrc->OperIs(GT_CNS_INT))
+        {
+            thenSrc = comp->gtNewIconNode(thenSrc->AsIntConCommon()->IconValue(), thenSrc->TypeGet());
+        }
+        else
+        {
+            unsigned flags = thenSrc->gtFlags;
+            thenSrc        = new (comp, thenSrc->OperGet())
+                GenTreeLclVar(thenSrc->OperGet(), thenSrc->TypeGet(), thenSrc->AsLclVarCommon()->GetLclNum(), -1);
+            thenSrc->gtFlags = flags;
+        }
+
+        if (elseSrc->OperIs(GT_CNS_INT))
+        {
+            elseSrc = comp->gtNewIconNode(elseSrc->AsIntConCommon()->IconValue(), elseSrc->TypeGet());
+        }
+        else
+        {
+            unsigned flags = elseSrc->gtFlags;
+            elseSrc        = new (comp, elseSrc->OperGet())
+                GenTreeLclVar(elseSrc->OperGet(), elseSrc->TypeGet(), elseSrc->AsLclVarCommon()->GetLclNum(), -1);
+            elseSrc->gtFlags = flags;
+        }
+
+        if (elseStore->OperIs(GT_RETURN))
+        {
+            elseStore = comp->gtNewOperNode(elseStore->OperGet(), elseStore->TypeGet(), elseStore->gtGetOp1());
+        }
+        else
+        {
+            unsigned flags = elseStore->gtFlags;
+            elseStore      = new (comp, elseStore->OperGet())
+                GenTreeLclVar(elseStore->OperGet(), elseStore->TypeGet(), elseStore->AsLclVarCommon()->GetLclNum(), -1);
+            elseStore->gtFlags = flags;
+        }
+
+        GenTreeOpCC* select =
+            new (comp, GT_SELCC) GenTreeOpCC(GT_SELCC, jcc->gtCondition, thenSrc->TypeGet(), thenSrc, elseSrc);
+        elseStore->gtOp.gtOp1 = select;
+
+         BlockRange().InsertBefore(jcc, thenSrc, elseSrc, select, elseStore);
+
+        if (thenSrc->OperIs(GT_LCL_VAR))
+            comp->lvaIncRefCnts(thenSrc);
+
+        if (elseSrc->OperIs(GT_LCL_VAR))
+            comp->lvaIncRefCnts(elseSrc);
+
+        if (elseStore->OperIs(GT_STORE_LCL_VAR))
+            comp->lvaIncRefCnts(elseStore);
+
+        BlockRange().Remove(jcc);
+
+        if (thenSrc->IsIntegralConst(0))
+        {
+            BlockRange().Remove(thenSrc);
+            // BlockRange().InsertBefore(cmp, thenSrc);
+        }
+
+        if (elseSrc->IsIntegralConst(0))
+        {
+            BlockRange().Remove(elseSrc);
+            // BlockRange().InsertBefore(cmp, elseSrc);
+        }
+
+        if (thenSrc->IsIntegralConst() && !elseSrc->IsIntegralConst())
+        {
+            std::swap(select->gtOp.gtOp1, select->gtOp.gtOp2);
+            select->gtCondition.Reverse();
+        }
+
+        comp->fgRemoveRefPred(thenBlock, m_block);
+        comp->fgRemoveRefPred(elseBlock, m_block);
+
+        if (tailBlock == nullptr)
+        {
+            m_block->bbJumpKind = BBJ_RETURN;
+        }
+        else
+        {
+            m_block->bbJumpKind = BBJ_ALWAYS;
+            m_block->bbJumpDest = tailBlock;
+            tailBlock->bbFlags |= BBF_JMP_TARGET;
+            comp->fgAddRefPred(tailBlock, m_block);
+        }
+
+        assert(select->gtGetOp1()->TypeGet() == select->gtGetOp2()->TypeGet());
+
+        return next;
+    }
+
+    return jcc;
+}
+
+GenTree* Lowering::LowerJTrue(GenTree* jtrue)
+{
+    return jtrue->gtNext;
+
+    // GenTree* next = TryIfConversion(jtrue);
+
+    // if (next == jtrue)
+    //{
+    //    next         = jtrue->gtNext;
+    //    GenTree* cmp = jtrue->gtGetOp1();
+
+    //    assert(cmp->OperIsCompare());
+
+    //    GenTreeCC* jcc = new (comp, GT_JCC) GenTreeCC(GT_JCC, CgCondition::FromCompareTree(cmp));
+    //    BlockRange().InsertAfter(jtrue, jcc);
+    //    BlockRange().Remove(jtrue);
+
+    //    cmp->SetOperRaw(jcc->gtCondition.IsFloat() ? GT_FCMP : GT_ICMP);
+    //}
+
+    // return next;
 }
 
 /**  -- Switch Lowering --

@@ -236,6 +236,8 @@ private:
     GenTree* TryCreateAddrMode(LIR::Use&& use, bool isIndir);
     void AddrModeCleanupHelper(GenTreeAddrMode* addrMode, GenTree* node);
 
+    GenTree* TryIfConversion(GenTreeCC* tree);
+    GenTree* LowerJTrue(GenTree* tree);
     GenTree* LowerSwitch(GenTree* node);
     void LowerCast(GenTree* node);
 
