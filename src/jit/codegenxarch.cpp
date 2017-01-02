@@ -1897,21 +1897,6 @@ void CodeGen::genCodeForTreeNode(GenTreePtr treeNode)
         }
         break;
 
-#ifndef _TARGET_64BIT_
-        case GT_JCC:
-        {
-            GenTreeJumpCC* jcc = treeNode->AsJumpCC();
-
-            assert(compiler->compCurBB->bbJumpKind == BBJ_COND);
-
-            CompareKind  compareKind = ((jcc->gtFlags & GTF_UNSIGNED) != 0) ? CK_UNSIGNED : CK_SIGNED;
-            emitJumpKind jumpKind    = genJumpKindForOper(jcc->gtCondition, compareKind);
-
-            inst_JMP(jumpKind, compiler->compCurBB->bbJumpDest);
-        }
-        break;
-#endif
-
         case GT_RETURNTRAP:
         {
             // this is nothing but a conditional call to CORINFO_HELP_STOP_FOR_GC
@@ -8615,7 +8600,7 @@ void CodeGen::ccgICMP(GenTreeOp* cmp)
     genConsumeOperands(cmp);
 
     GenTree*  op1     = cmp->gtGetOp1();
-    GenTree*  op2     = cmp->gtGetOp1();
+    GenTree*  op2     = cmp->gtGetOp2();
     var_types op1Type = op1->TypeGet();
     var_types op2Type = op2->TypeGet();
 
@@ -8686,8 +8671,8 @@ void CodeGen::ccgFCMP(GenTreeOp* cmp)
 
     genConsumeOperands(cmp);
 
-    GenTree*  op1     = cmp->gtOp1;
-    GenTree*  op2     = cmp->gtOp2;
+    GenTree*  op1     = cmp->gtGetOp1();
+    GenTree*  op2     = cmp->gtGetOp2();
     var_types op1Type = op1->TypeGet();
     var_types op2Type = op2->TypeGet();
 

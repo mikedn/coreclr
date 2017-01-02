@@ -4665,6 +4665,9 @@ void Lowering::ccTreeNodeInfoInitSETCC(GenTreeCC* setcc)
     TreeNodeInfo* info = &(setcc->gtLsraInfo);
     info->srcCount     = 0;
     info->dstCount     = 1;
+#ifdef _TARGET_X86_
+    info->setDstCandidates(m_lsra, RBM_BYTE_REGS);
+#endif
 }
 
 void Lowering::ccTreeNodeInfoInitJCC(GenTreeCC* jcc)
