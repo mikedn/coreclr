@@ -8811,8 +8811,8 @@ void GenTree::CopyTo(class Compiler* comp, const GenTree& gt)
 {
     SetOperRaw(gt.OperGet());
 
-    gtType         = gt.gtType;
-    gtAssertionNum = gt.gtAssertionNum;
+    gtType          = gt.gtType;
+    gtAssertionInfo = gt.gtAssertionInfo;
 
     gtRegNum = gt.gtRegNum; // one union member.
     CopyCosts(&gt);

@@ -149,6 +149,61 @@ struct BasicBlock;
 
 struct InlineCandidateInfo;
 
+typedef unsigned short AssertionIndex;
+
+static const AssertionIndex NO_ASSERTION_INDEX = 0;
+
+class AssertionInfo
+{
+    // true if the assertion holds on the bbNext edge instead of the bbJumpDest edge (for GT_JTRUE nodes)
+    unsigned short m_isNextEdgeAssertion : 1;
+    // 1-based index of the assertion
+    unsigned short m_index : 15;
+
+    AssertionInfo(bool isNextEdgeAssertion, AssertionIndex index)
+        : m_isNextEdgeAssertion(isNextEdgeAssertion), m_index(index)
+    {
+        assert(m_index == index);
+    }
+
+public:
+    AssertionInfo() : AssertionInfo(false, 0)
+    {
+    }
+
+    AssertionInfo(AssertionIndex index) : AssertionInfo(false, index)
+    {
+    }
+
+    static AssertionInfo ForNextEdge(AssertionIndex index)
+    {
+        // Ignore the edge information if there's no assertion
+        bool isNextEdge = (index != NO_ASSERTION_INDEX);
+        return AssertionInfo(isNextEdge, index);
+    }
+
+    void Clear()
+    {
+        m_isNextEdgeAssertion = 0;
+        m_index               = NO_ASSERTION_INDEX;
+    }
+
+    bool HasAssertion() const
+    {
+        return m_index != NO_ASSERTION_INDEX;
+    }
+
+    AssertionIndex GetIndex() const
+    {
+        return m_index;
+    }
+
+    bool IsNextEdgeAssertion() const
+    {
+        return m_isNextEdgeAssertion;
+    }
+};
+
 /*****************************************************************************/
 
 // GT_FIELD nodes will be lowered into more "code-gen-able" representations, like
@@ -396,29 +451,27 @@ struct GenTree
     unsigned char gtLIRFlags; // Used for nodes that are in LIR. See LIR::Flags in lir.h for the various flags.
 
 #if ASSERTION_PROP
-    unsigned short gtAssertionNum; // 0 or Assertion table index
-                                   // possibly ORed with optAssertionEdge::OAE_NEXT_EDGE
-                                   // valid only for non-GT_STMT nodes
+    AssertionInfo gtAssertionInfo; // valid only for non-GT_STMT nodes
 
-    bool HasAssertion() const
+    bool GeneratesAssertion() const
     {
-        return gtAssertionNum != 0;
+        return gtAssertionInfo.HasAssertion();
     }
+
     void ClearAssertion()
     {
-        gtAssertionNum = 0;
+        gtAssertionInfo.Clear();
     }
 
-    unsigned short GetAssertion() const
+    AssertionInfo GetAssertionInfo() const
     {
-        return gtAssertionNum;
-    }
-    void SetAssertion(unsigned short value)
-    {
-        assert((unsigned short)value == value);
-        gtAssertionNum = (unsigned short)value;
+        return gtAssertionInfo;
     }
 
+    void SetAssertionInfo(AssertionInfo info)
+    {
+        gtAssertionInfo = info;
+    }
 #endif
 
 #if FEATURE_STACK_FP_X87
