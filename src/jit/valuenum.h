@@ -537,13 +537,13 @@ public:
     // Returns true iff the VN represents an integeral constant.
     bool IsVNInt32Constant(ValueNum vn);
 
-    struct ArrLenUnsignedBoundInfo
+    struct ArrLenBoundInfo
     {
         unsigned cmpOper;
         ValueNum vnIdx;
         ValueNum vnLen;
 
-        ArrLenUnsignedBoundInfo() : cmpOper(GT_NONE), vnIdx(NoVN), vnLen(NoVN)
+        ArrLenBoundInfo() : cmpOper(GT_NONE), vnIdx(NoVN), vnLen(NoVN)
         {
         }
     };
@@ -619,13 +619,16 @@ public:
     void GetConstantBoundInfo(ValueNum vn, ConstantBoundInfo* info);
 
     // If "vn" is of the form "(uint)var < (uint)a.len" (or equivalent) return true.
-    bool IsVNArrLenUnsignedBound(ValueNum vn, ArrLenUnsignedBoundInfo* info);
+    bool TryGetArrLenUnsignedBoundInfo(ValueNum vn, ArrLenBoundInfo* info);
 
     // If "vn" is of the form "var < a.len" or "a.len <= var" return true.
     bool IsVNArrLenBound(ValueNum vn);
 
     // If "vn" is arr len bound, then populate the "info" fields for the arrVn, cmpOp, cmpOper.
     void GetArrLenBoundInfo(ValueNum vn, ArrLenArithBoundInfo* info);
+
+    // If "vn" is arr len bound, then populate the "info" fields for the arrVn, cmpOp, cmpOper.
+    bool TryGetArrLenBoundInfo(ValueNum vn, ArrLenBoundInfo* info);
 
     // If "vn" is of the form "a.len +/- var" return true.
     bool IsVNArrLenArith(ValueNum vn);

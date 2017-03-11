@@ -1772,7 +1772,7 @@ AssertionInfo Compiler::optCreateJTrueBoundsAssertion(GenTreePtr tree)
 
     ValueNum vn = op1->gtVNPair.GetConservative();
 
-    ValueNumStore::ArrLenUnsignedBoundInfo arrLenUnsignedBnd;
+    ValueNumStore::ArrLenBoundInfo arrLenBndInfo;
     // Cases where op1 holds the condition with array arithmetic and op2 is 0.
     // Loop condition like: "i < a.len +/-k == 0"
     // Assertion: "i < a.len +/- k == 0"
@@ -1795,12 +1795,16 @@ AssertionInfo Compiler::optCreateJTrueBoundsAssertion(GenTreePtr tree)
     // Cases where op1 holds the condition array length and op2 is 0.
     // Loop condition like: "i < a.len == 0"
     // Assertion: "i < a.len == false"
-    else if (vnStore->IsVNArrLenBound(vn) &&
+    else if (vnStore->TryGetArrLenBoundInfo(vn, &arrLenBndInfo) &&
              (op2->gtVNPair.GetConservative() == vnStore->VNZeroForType(op2->TypeGet())) &&
              (relop->gtOper == GT_EQ || relop->gtOper == GT_NE))
     {
+        assert(arrLenBndInfo.vnIdx != ValueNumStore::NoVN);
+        assert((arrLenBndInfo.cmpOper == GT_LT) || (arrLenBndInfo.cmpOper == GT_GE));
+        assert(vnStore->IsVNArrLen(arrLenBndInfo.vnLen));
+
         AssertionDsc dsc;
-        dsc.assertionKind    = relop->gtOper == GT_EQ ? OAK_EQUAL : OAK_NOT_EQUAL;
+        dsc.assertionKind    = ((arrLenBndInfo.cmpOper == GT_LT) == relop->OperIs(GT_NE)) ? OAK_NOT_EQUAL : OAK_EQUAL;
         dsc.op1.kind         = O1K_ARRLEN_LOOP_BND;
         dsc.op1.vn           = vn;
         dsc.op2.kind         = O2K_CONST_INT;
@@ -1808,16 +1812,25 @@ AssertionInfo Compiler::optCreateJTrueBoundsAssertion(GenTreePtr tree)
         dsc.op2.u1.iconVal   = 0;
         dsc.op2.u1.iconFlags = 0;
         AssertionIndex index = optAddAssertion(&dsc);
-        optCreateComplementaryAssertion(index, nullptr, nullptr);
+        if (dsc.assertionKind == OAK_EQUAL)
+        {
+            // By default JTRUE generated assertions hold on the "jump" edge. We have i >= a.len but we're really
+            // after i < a.len so we need to change the assertion edge to "next".
+            return AssertionInfo::ForNextEdge(index);
+        }
         return index;
     }
     // Cases where op1 holds the lhs of the condition op2 holds rhs.
     // Loop condition like "i < a.len"
     // Assertion: "i < a.len != 0"
-    else if (vnStore->IsVNArrLenBound(relop->gtVNPair.GetConservative()))
+    else if (vnStore->TryGetArrLenBoundInfo(relop->gtVNPair.GetConservative(), &arrLenBndInfo))
     {
+        assert(arrLenBndInfo.vnIdx != ValueNumStore::NoVN);
+        assert((arrLenBndInfo.cmpOper == GT_LT) || (arrLenBndInfo.cmpOper == GT_GE));
+        assert(vnStore->IsVNArrLen(arrLenBndInfo.vnLen));
+
         AssertionDsc dsc;
-        dsc.assertionKind    = OAK_NOT_EQUAL;
+        dsc.assertionKind    = (arrLenBndInfo.cmpOper == GT_LT) ? OAK_NOT_EQUAL : OAK_EQUAL;
         dsc.op1.kind         = O1K_ARRLEN_LOOP_BND;
         dsc.op1.vn           = relop->gtVNPair.GetConservative();
         dsc.op2.kind         = O2K_CONST_INT;
@@ -1825,28 +1838,33 @@ AssertionInfo Compiler::optCreateJTrueBoundsAssertion(GenTreePtr tree)
         dsc.op2.u1.iconVal   = 0;
         dsc.op2.u1.iconFlags = 0;
         AssertionIndex index = optAddAssertion(&dsc);
-        optCreateComplementaryAssertion(index, nullptr, nullptr);
+        if (dsc.assertionKind == OAK_EQUAL)
+        {
+            // By default JTRUE generated assertions hold on the "jump" edge. We have i >= a.len but we're really
+            // after i < a.len so we need to change the assertion edge to "next".
+            return AssertionInfo::ForNextEdge(index);
+        }
         return index;
     }
     // Loop condition like "(uint)i < (uint)a.len" or equivalent
     // Assertion: "no throw" since this condition guarantees that i is both >= 0 and < a.len (on the appropiate edge)
-    else if (vnStore->IsVNArrLenUnsignedBound(relop->gtVNPair.GetConservative(), &arrLenUnsignedBnd))
+    else if (vnStore->TryGetArrLenUnsignedBoundInfo(relop->gtVNPair.GetConservative(), &arrLenBndInfo))
     {
-        assert(arrLenUnsignedBnd.vnIdx != ValueNumStore::NoVN);
-        assert((arrLenUnsignedBnd.cmpOper == VNF_LT_UN) || (arrLenUnsignedBnd.cmpOper == VNF_GE_UN));
-        assert(vnStore->IsVNArrLen(arrLenUnsignedBnd.vnLen));
+        assert(arrLenBndInfo.vnIdx != ValueNumStore::NoVN);
+        assert((arrLenBndInfo.cmpOper == VNF_LT_UN) || (arrLenBndInfo.cmpOper == VNF_GE_UN));
+        assert(vnStore->IsVNArrLen(arrLenBndInfo.vnLen));
 
         AssertionDsc dsc;
         dsc.assertionKind = OAK_NO_THROW;
         dsc.op1.kind      = O1K_ARR_BND;
         dsc.op1.vn        = relop->gtVNPair.GetConservative();
-        dsc.op1.bnd.vnIdx = arrLenUnsignedBnd.vnIdx;
-        dsc.op1.bnd.vnLen = arrLenUnsignedBnd.vnLen;
+        dsc.op1.bnd.vnIdx = arrLenBndInfo.vnIdx;
+        dsc.op1.bnd.vnLen = arrLenBndInfo.vnLen;
         dsc.op2.kind      = O2K_INVALID;
         dsc.op2.vn        = ValueNumStore::NoVN;
 
         AssertionIndex index = optAddAssertion(&dsc);
-        if (arrLenUnsignedBnd.cmpOper == VNF_GE_UN)
+        if (arrLenBndInfo.cmpOper == VNF_GE_UN)
         {
             // By default JTRUE generated assertions hold on the "jump" edge. We have i >= a.len but we're really
             // after i < a.len so we need to change the assertion edge to "next".

@@ -3176,7 +3176,7 @@ void ValueNumStore::GetConstantBoundInfo(ValueNum vn, ConstantBoundInfo* info)
 //           assertion instead of the OAK_EQUAL/NOT_EQUAL assertions created by signed compares
 //           (IsVNArrLenBound, IsVNArrLenArithBound) that require further processing.
 
-bool ValueNumStore::IsVNArrLenUnsignedBound(ValueNum vn, ArrLenUnsignedBoundInfo* info)
+bool ValueNumStore::TryGetArrLenUnsignedBoundInfo(ValueNum vn, ArrLenBoundInfo* info)
 {
     VNFuncApp funcApp;
 
@@ -3257,6 +3257,40 @@ void ValueNumStore::GetArrLenBoundInfo(ValueNum vn, ArrLenArithBoundInfo* info)
         info->cmpOp   = funcAttr.m_args[1];
         info->vnArray = GetArrForLenVn(funcAttr.m_args[0]);
     }
+}
+
+bool ValueNumStore::TryGetArrLenBoundInfo(ValueNum vn, ArrLenBoundInfo* info)
+{
+    VNFuncApp funcApp;
+
+    if (GetVNFunc(vn, &funcApp))
+    {
+        if (((funcApp.m_func == GT_LT) || (funcApp.m_func == GT_GE)) && IsVNArrLen(funcApp.m_args[1]))
+        {
+            // We only care about "i < a.len" and its negation "i >= a.len"
+            if (info != nullptr)
+            {
+                info->cmpOper = funcApp.m_func;
+                info->vnIdx   = funcApp.m_args[0];
+                info->vnLen   = funcApp.m_args[1];
+            }
+            return true;
+        }
+        else if (((funcApp.m_func == GT_GT) || (funcApp.m_func == GT_LE)) && IsVNArrLen(funcApp.m_args[0]))
+        {
+            // We only care about "a.len > i" and its negation "a.len <= i"
+            if (info != nullptr)
+            {
+                // Let's keep a consistent operand order - it's always i < a.len, never a.len > i
+                info->cmpOper = (funcApp.m_func == GT_GT) ? GT_LT : GT_GE;
+                info->vnIdx   = funcApp.m_args[1];
+                info->vnLen   = funcApp.m_args[0];
+            }
+            return true;
+        }
+    }
+
+    return false;
 }
 
 bool ValueNumStore::IsVNArrLenArith(ValueNum vn)
