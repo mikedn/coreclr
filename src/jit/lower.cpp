@@ -124,7 +124,7 @@ GenTree* Lowering::LowerNode(GenTree* node)
 
         case GT_UDIV:
         case GT_UMOD:
-            LowerUnsignedDivOrMod(node);
+            return LowerUnsignedDivOrMod(node->AsOp());
             break;
 
         case GT_DIV:
@@ -3959,46 +3959,428 @@ GenTree* Lowering::LowerAdd(GenTree* node)
 }
 
 //------------------------------------------------------------------------
-// LowerUnsignedDivOrMod: transform GT_UDIV/GT_UMOD nodes with a const power of 2
-// divisor into GT_RSZ/GT_AND nodes.
+// GetUnsignedMagicNumberForDivide: Generates a magic number and shift amount for
+// the magic number unsigned division optimization.
 //
 // Arguments:
-//    node - pointer to the GT_UDIV/GT_UMOD node to be lowered
+//    d     - The divisor
+//    add   - Pointer to a flag indicating the kind of code to generate
+//    shift - Pointer to the shift value to be returned
 //
-void Lowering::LowerUnsignedDivOrMod(GenTree* node)
+// Returns:
+//    The magic number.
+//
+// Notes:
+//    This code is adapted from _The_PowerPC_Compiler_Writer's_Guide_, pages 57-58.
+//    The paper is based on "Division by invariant integers using multiplication"
+//    by Torbjorn Granlund and Peter L. Montgomery in PLDI 94
+
+template <typename T>
+T GetUnsignedMagicNumberForDivide(T d, bool* add /*out*/, int* shift /*out*/)
 {
-    assert((node->OperGet() == GT_UDIV) || (node->OperGet() == GT_UMOD));
+    assert((d >= 3) && !isPow2(d));
 
-    GenTree* divisor  = node->gtGetOp2();
-    GenTree* dividend = node->gtGetOp1();
+    typedef typename jitstd::make_signed<T>::type ST;
 
-    if (divisor->IsCnsIntOrI()
-#ifdef _TARGET_X86_
-        && (dividend->OperGet() != GT_LONG)
-#endif
-            )
+    const unsigned bits         = sizeof(T) * 8;
+    const unsigned bits_minus_1 = bits - 1;
+    const T        two_nminus1  = T(1) << bits_minus_1;
+
+    *add        = false;
+    const T  nc = -ST(1) - -ST(d) % ST(d);
+    unsigned p  = bits_minus_1;
+    T        q1 = two_nminus1 / nc;
+    T        r1 = two_nminus1 - (q1 * nc);
+    T        q2 = (two_nminus1 - 1) / d;
+    T        r2 = (two_nminus1 - 1) - (q2 * d);
+    T        delta;
+
+    do
     {
-        size_t divisorValue = static_cast<size_t>(divisor->gtIntCon.IconValue());
+        p++;
 
-        if (isPow2(divisorValue))
+        if (r1 >= (nc - r1))
         {
-            genTreeOps newOper;
+            q1 = 2 * q1 + 1;
+            r1 = 2 * r1 - nc;
+        }
+        else
+        {
+            q1 = 2 * q1;
+            r1 = 2 * r1;
+        }
 
-            if (node->OperGet() == GT_UDIV)
+        if ((r2 + 1) >= (d - r2))
+        {
+            if (q2 >= (two_nminus1 - 1))
             {
-                newOper      = GT_RSZ;
-                divisorValue = genLog2(divisorValue);
-            }
-            else
-            {
-                newOper = GT_AND;
-                divisorValue -= 1;
+                *add = true;
             }
 
-            node->SetOper(newOper);
-            divisor->gtIntCon.SetIconValue(divisorValue);
+            q2 = 2 * q2 + 1;
+            r2 = 2 * r2 + 1 - d;
+        }
+        else
+        {
+            if (q2 >= two_nminus1)
+            {
+                *add = true;
+            }
+
+            q2 = 2 * q2;
+            r2 = 2 * r2 + 1;
+        }
+
+        delta = d - 1 - r2;
+
+    } while ((p < (bits * 2)) && ((q1 < delta) || ((q1 == delta) && (r1 == 0))));
+
+    *shift = p - bits; // resulting shift
+    return q2 + 1;     // resulting magic number
+}
+
+/* Computes "magic info" for performing unsigned division by a fixed positive integer D.
+The type 'uint' is assumed to be defined as an unsigned integer type large enough
+to hold both the dividend and the divisor. num_bits can be set appropriately if n is
+known to be smaller than the largest uint; if this is not known then pass
+(sizeof(uint) * CHAR_BIT) for num_bits.
+
+Assume we have a hardware register of width UINT_BITS, a known constant D which is
+not zero and not a power of 2, and a variable n of width num_bits (which may be
+up to UINT_BITS). To emit code for n/d, use one of the two following sequences
+(here >>> refers to a logical bitshift):
+
+m = compute_unsigned_magic_info(D, num_bits)
+if m.pre_shift > 0: emit("n >>>= m.pre_shift")
+if m.increment: emit("n = saturated_increment(n)")
+emit("result = (m.multiplier * n) >>> UINT_BITS")
+if m.post_shift > 0: emit("result >>>= m.post_shift")
+
+or
+
+m = compute_unsigned_magic_info(D, num_bits)
+if m.pre_shift > 0: emit("n >>>= m.pre_shift")
+emit("result = m.multiplier * n")
+if m.increment: emit("result = result + m.multiplier")
+emit("result >>>= UINT_BITS")
+if m.post_shift > 0: emit("result >>>= m.post_shift")
+
+The shifts by UINT_BITS may be "free" if the high half of the full multiply
+is put in a separate register.
+
+saturated_increment(n) means "increment n unless it would wrap to 0," i.e.
+if n == (1 << UINT_BITS)-1: result = n
+else: result = n+1
+A common way to implement this is with the carry bit. For example, on x86:
+add 1
+sbb 0
+
+Some invariants:
+1: At least one of pre_shift and increment is zero
+2: multiplier is never zero
+
+This code incorporates the "round down" optimization per ridiculous_fish.
+*/
+
+typedef unsigned uint;
+
+struct magicu_info
+{
+    uint     multiplier; // the "magic number" multiplier
+    unsigned pre_shift;  // shift for the dividend before multiplying
+    unsigned post_shift; // shift for the dividend after multiplying
+    int      increment;  // 0 or 1; if set then increment the numerator, using one of the two strategies
+};
+struct magicu_info compute_unsigned_magic_info(uint D, unsigned num_bits);
+
+/* Implementations follow */
+
+struct magicu_info compute_unsigned_magic_info(uint D, unsigned num_bits)
+{
+
+    // The numerator must fit in a uint
+    assert(num_bits > 0 && num_bits <= sizeof(uint) * CHAR_BIT);
+
+    // D must be larger than zero and not a power of 2
+    assert(D & (D - 1));
+
+    // The eventual result
+    struct magicu_info result;
+
+    // Bits in a uint
+    const unsigned UINT_BITS = sizeof(uint) * CHAR_BIT;
+
+    // The extra shift implicit in the difference between UINT_BITS and num_bits
+    const unsigned extra_shift = UINT_BITS - num_bits;
+
+    // The initial power of 2 is one less than the first one that can possibly work
+    const uint initial_power_of_2 = (uint)1 << (UINT_BITS - 1);
+
+    // The remainder and quotient of our power of 2 divided by d
+    uint quotient = initial_power_of_2 / D, remainder = initial_power_of_2 % D;
+
+    // ceil(log_2 D)
+    unsigned ceil_log_2_D;
+
+    // The magic info for the variant "round down" algorithm
+    uint     down_multiplier = 0;
+    unsigned down_exponent   = 0;
+    int      has_magic_down  = 0;
+
+    // Compute ceil(log_2 D)
+    ceil_log_2_D = 0;
+    uint tmp;
+    for (tmp = D; tmp > 0; tmp >>= 1)
+        ceil_log_2_D += 1;
+
+    // Begin a loop that increments the exponent, until we find a power of 2 that works.
+    unsigned exponent;
+    for (exponent = 0;; exponent++)
+    {
+        // Quotient and remainder is from previous exponent; compute it for this exponent.
+        if (remainder >= D - remainder)
+        {
+            // Doubling remainder will wrap around D
+            quotient  = quotient * 2 + 1;
+            remainder = remainder * 2 - D;
+        }
+        else
+        {
+            // Remainder will not wrap
+            quotient  = quotient * 2;
+            remainder = remainder * 2;
+        }
+
+        // We're done if this exponent works for the round_up algorithm.
+        // Note that exponent may be larger than the maximum shift supported,
+        // so the check for >= ceil_log_2_D is critical.
+        if ((exponent + extra_shift >= ceil_log_2_D) || (D - remainder) <= ((uint)1 << (exponent + extra_shift)))
+            break;
+
+        // Set magic_down if we have not set it yet and this exponent works for the round_down algorithm
+        if (!has_magic_down && remainder <= ((uint)1 << (exponent + extra_shift)))
+        {
+            has_magic_down  = 1;
+            down_multiplier = quotient;
+            down_exponent   = exponent;
         }
     }
+
+    if (exponent < ceil_log_2_D)
+    {
+        // magic_up is efficient
+        result.multiplier = quotient + 1;
+        result.pre_shift  = 0;
+        result.post_shift = exponent;
+        result.increment  = 0;
+    }
+    else if (D & 1)
+    {
+        // Odd divisor, so use magic_down, which must have been set
+        assert(has_magic_down);
+        result.multiplier = down_multiplier;
+        result.pre_shift  = 0;
+        result.post_shift = down_exponent;
+        result.increment  = 1;
+    }
+    else
+    {
+        // Even divisor, so use a prefix-shifted dividend
+        unsigned pre_shift = 0;
+        uint     shifted_D = D;
+        while ((shifted_D & 1) == 0)
+        {
+            shifted_D >>= 1;
+            pre_shift += 1;
+        }
+        result = compute_unsigned_magic_info(shifted_D, num_bits - pre_shift);
+        assert(result.increment == 0 && result.pre_shift == 0); // expect no increment or pre_shift in this path
+        result.pre_shift = pre_shift;
+    }
+    return result;
+}
+
+//------------------------------------------------------------------------
+// LowerUnsignedDivOrMod: Lowers a GT_UDIV/GT_UMOD node.
+//
+// Arguments:
+//    divMod - pointer to the GT_UDIV/GT_UMOD node to be lowered
+//
+// Notes:
+//    - Transform UDIV/UMOD by power of 2 into RSZ/AND
+//    - Transform UDIV by constant >= 2^(N-1) into GE
+//    - Transform UDIV/UMOD by constant >= 3 into "magic division"
+
+GenTree* Lowering::LowerUnsignedDivOrMod(GenTreeOp* divMod)
+{
+    assert(divMod->OperIs(GT_UDIV, GT_UMOD));
+
+    GenTree* next     = divMod->gtNext;
+    GenTree* dividend = divMod->gtGetOp1();
+    GenTree* divisor  = divMod->gtGetOp2();
+
+#if !defined(_TARGET_64BIT_)
+    if (dividend->OperIs(GT_LONG))
+    {
+        return next;
+    }
+#endif
+
+    if (!divisor->IsCnsIntOrI())
+    {
+        return next;
+    }
+
+    if (dividend->IsCnsIntOrI())
+    {
+        // We shouldn't see a divmod with constant operands here but if we do then it's likely
+        // because optimizations are disabled or it's a case that's supposed to throw an exception.
+        // Don't optimize this.
+        return next;
+    }
+
+    const var_types type = divMod->TypeGet();
+    assert((type == TYP_INT) || (type == TYP_I_IMPL));
+
+    size_t divisorValue = static_cast<size_t>(divisor->AsIntCon()->IconValue());
+
+    if (type == TYP_INT)
+    {
+        // Clear up the upper 32 bits of the value, they may be set to 1 because constants
+        // are treated as signed and stored in ssize_t which is 64 bit in size on 64 bit targets.
+        divisorValue &= UINT32_MAX;
+    }
+
+    if (divisorValue == 0)
+    {
+        return next;
+    }
+
+    if (isPow2(divisorValue))
+    {
+        genTreeOps newOper;
+
+        if (divMod->OperIs(GT_UDIV))
+        {
+            newOper      = GT_RSZ;
+            divisorValue = genLog2(divisorValue);
+        }
+        else
+        {
+            newOper = GT_AND;
+            divisorValue -= 1;
+        }
+
+        divMod->SetOper(newOper);
+        divisor->AsIntCon()->SetIconValue(divisorValue);
+
+        return next;
+    }
+
+    if (divMod->OperIs(GT_UDIV))
+    {
+        // If the divisor is greater or equal than 2^(N - 1) then the result is 1
+        // iff the dividend is greater or equal than the divisor.
+        if (((type == TYP_INT) && (divisorValue > (UINT32_MAX / 2))) ||
+            ((type == TYP_LONG) && (divisorValue > (UINT64_MAX / 2))))
+        {
+            divMod->SetOper(GT_GE);
+            divMod->gtFlags |= GTF_UNSIGNED;
+            return next;
+        }
+    }
+
+// TODO-ARM-CQ: Currently there's no GT_MULHI for ARM32/64
+#ifdef _TARGET_XARCH_
+    if (divisorValue >= 3)
+    {
+        bool     isMod          = divMod->OperIs(GT_UMOD);
+        unsigned curBBWeight    = m_block->getBBWeight(comp);
+        unsigned dividendLclNum = BAD_VAR_NUM;
+
+        if (isMod)
+        {
+            LIR::Use dividendUse(BlockRange(), &divMod->gtOp1, divMod);
+            dividendLclNum = dividendUse.ReplaceWithLclVar(comp, curBBWeight);
+            dividend = divMod->gtGetOp1();
+        }
+
+        magicu_info info = compute_unsigned_magic_info((unsigned)divisorValue, genTypeSize(type) * CHAR_BIT);
+
+        GenTree* result = dividend;
+        GenTree* prev   = divMod->gtPrev;
+
+        if (info.pre_shift > 0)
+        {
+            GenTree* preShiftBy = comp->gtNewIconNode(info.pre_shift, TYP_INT);
+            result              = comp->gtNewOperNode(GT_RSZ, type, result, preShiftBy);
+            BlockRange().InsertBefore(divMod, preShiftBy, result);
+        }
+
+        if (info.increment)
+        {
+            GenTree* one  = comp->gtNewIconNode(1, type);
+            GenTree* add  = comp->gtNewOperNode(GT_ADD_LO, type, result, one);
+            GenTree* zero = comp->gtNewZeroConNode(type);
+            result        = comp->gtNewOperNode(GT_SUB_HI, type, add, zero);
+            BlockRange().InsertBefore(divMod, one, add, zero, result);
+        }
+
+        divisor->AsIntCon()->SetIconValue(info.multiplier);
+
+        if ((info.post_shift == 0) && !isMod)
+        {
+            divMod->SetOper(GT_MULHI);
+            divMod->gtOp1 = result;
+            divMod->gtFlags |= GTF_UNSIGNED;
+        }
+        else
+        {
+            result = comp->gtNewOperNode(GT_MULHI, type, result, divisor);
+            result->gtFlags |= GTF_UNSIGNED;
+            BlockRange().InsertBefore(divMod, result);
+
+            if (info.post_shift > 0)
+            {
+                GenTree* postShiftBy = comp->gtNewIconNode(info.post_shift, TYP_INT);
+                BlockRange().InsertBefore(divMod, postShiftBy);
+
+                if (isMod)
+                {
+                    result = comp->gtNewOperNode(GT_RSZ, type, result, postShiftBy);
+                    BlockRange().InsertBefore(divMod, result);
+                }
+                else
+                {
+                    divMod->SetOper(GT_RSZ);
+                    divMod->gtOp1 = result;
+                    divMod->gtOp2 = postShiftBy;
+                }
+            }
+
+            if (isMod)
+            {
+                // divisor UMOD dividend = dividend SUB (result MUL divisor)
+                GenTree* divisor  = comp->gtNewIconNode(divisorValue, type);
+                GenTree* mul      = comp->gtNewOperNode(GT_MUL, type, result, divisor);
+                GenTree* dividend = comp->gtNewLclvNode(dividendLclNum, type);
+
+                divMod->SetOper(GT_SUB);
+                divMod->gtOp1 = dividend;
+                divMod->gtOp2 = mul;
+
+                BlockRange().InsertBefore(divMod, dividend, divisor, mul);
+                comp->lvaTable[dividendLclNum].incRefCnts(curBBWeight, comp);
+            }
+        }
+
+        comp->fgDispBasicBlocks(true);
+
+        return prev->gtNext;
+    }
+#endif
+
+    return next;
 }
 
 //------------------------------------------------------------------------

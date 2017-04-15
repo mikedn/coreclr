@@ -535,10 +535,6 @@ void CodeGen::genCodeForNegNot(GenTree* tree)
 // Generate code to get the high N bits of a N*N=2N bit multiplication result
 void CodeGen::genCodeForMulHi(GenTreeOp* treeNode)
 {
-    if (treeNode->OperGet() == GT_MULHI)
-    {
-        assert(!(treeNode->gtFlags & GTF_UNSIGNED));
-    }
     assert(!treeNode->gtOverflowEx());
 
     regNumber targetReg  = treeNode->gtRegNum;
@@ -815,7 +811,8 @@ void CodeGen::genCodeForBinary(GenTree* treeNode)
     emitter*         emit       = getEmitter();
 
 #if defined(_TARGET_64BIT_)
-    assert(oper == GT_OR || oper == GT_XOR || oper == GT_AND || oper == GT_ADD || oper == GT_SUB);
+    assert(oper == GT_OR || oper == GT_XOR || oper == GT_AND || oper == GT_ADD || oper == GT_SUB || oper == GT_ADD_LO ||
+           oper == GT_ADD_HI || oper == GT_SUB_LO || oper == GT_SUB_HI);
 #else  // !defined(_TARGET_64BIT_)
     assert(oper == GT_OR || oper == GT_XOR || oper == GT_AND || oper == GT_ADD_LO || oper == GT_ADD_HI ||
            oper == GT_SUB_LO || oper == GT_SUB_HI || oper == GT_MUL_LONG || oper == GT_DIV_HI || oper == GT_MOD_HI ||
@@ -1679,13 +1676,10 @@ void CodeGen::genCodeForTreeNode(GenTreePtr treeNode)
 
             __fallthrough;
 
-#if !defined(_TARGET_64BIT_)
         case GT_ADD_LO:
         case GT_ADD_HI:
         case GT_SUB_LO:
         case GT_SUB_HI:
-#endif // !defined(_TARGET_64BIT_)
-
         case GT_ADD:
         case GT_SUB:
             genConsumeOperands(treeNode->AsOp());
@@ -4016,7 +4010,6 @@ instruction CodeGen::genGetInsForOper(genTreeOps oper, var_types type)
         case GT_XOR:
             ins = INS_xor;
             break;
-#if !defined(_TARGET_64BIT_)
         case GT_ADD_LO:
             ins = INS_add;
             break;
@@ -4029,6 +4022,7 @@ instruction CodeGen::genGetInsForOper(genTreeOps oper, var_types type)
         case GT_SUB_HI:
             ins = INS_sbb;
             break;
+#if !defined(_TARGET_64BIT_)
         case GT_LSH_HI:
             ins = INS_shld;
             break;

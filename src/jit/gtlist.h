@@ -168,6 +168,11 @@ GTNODE(MKREFANY         , "mkrefany"     ,GenTreeOp          ,0,GTK_BINOP)
 
 GTNODE(LEA              , "lea"          ,GenTreeAddrMode    ,0,GTK_BINOP|GTK_EXOP)
 
+GTNODE(ADD_LO           , "+Lo"          ,GenTreeOp          ,1,GTK_BINOP)
+GTNODE(ADD_HI           , "+Hi"          ,GenTreeOp          ,1,GTK_BINOP)
+GTNODE(SUB_LO           , "-Lo"          ,GenTreeOp          ,0,GTK_BINOP)
+GTNODE(SUB_HI           , "-Hi"          ,GenTreeOp          ,0,GTK_BINOP)
+
 #if !defined(LEGACY_BACKEND) && !defined(_TARGET_64BIT_)
 // A GT_LONG node simply represents the long value produced by the concatenation
 // of its two (lower and upper half) operands.  Some GT_LONG nodes are transient,
@@ -180,10 +185,6 @@ GTNODE(LONG             , "gt_long"      ,GenTreeOp          ,0,GTK_BINOP)
 // named GT_XXX_HI for consistency, low operators of 64-bit operations that need
 // to not be modified in phases post-decompose, and operators that return 64-bit
 // results in one instruction.
-GTNODE(ADD_LO           , "+Lo"          ,GenTreeOp          ,1,GTK_BINOP)
-GTNODE(ADD_HI           , "+Hi"          ,GenTreeOp          ,1,GTK_BINOP)
-GTNODE(SUB_LO           , "-Lo"          ,GenTreeOp          ,0,GTK_BINOP)
-GTNODE(SUB_HI           , "-Hi"          ,GenTreeOp          ,0,GTK_BINOP)
 GTNODE(DIV_HI           , "/Hi"          ,GenTreeOp          ,0,GTK_BINOP)
 GTNODE(MOD_HI           , "%Hi"          ,GenTreeOp          ,0,GTK_BINOP)
 

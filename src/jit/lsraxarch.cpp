@@ -375,12 +375,10 @@ void Lowering::TreeNodeInfoInit(GenTree* tree)
             info->dstCount = 0;
             break;
 
-#if !defined(_TARGET_64BIT_)
         case GT_ADD_LO:
         case GT_ADD_HI:
         case GT_SUB_LO:
         case GT_SUB_HI:
-#endif
         case GT_ADD:
         case GT_SUB:
             // SSE2 arithmetic instructions doesn't support the form "op mem, xmm".
