@@ -102,6 +102,7 @@ GTSTRUCT_1(SIMD        , GT_SIMD)
 #endif // FEATURE_SIMD
 GTSTRUCT_1(AllocObj    , GT_ALLOCOBJ)
 GTSTRUCT_2(CC          , GT_JCC, GT_SETCC)
+GTSTRUCT_1(OpCC        , GT_SELCC)
 #if !defined(LEGACY_BACKEND) && defined(_TARGET_ARM_)
 GTSTRUCT_1(MulLong     , GT_MUL_LONG)
 #endif
