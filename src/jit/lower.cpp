@@ -2759,6 +2759,7 @@ void Lowering::LowerCompare(GenTree* cmp)
             {
                 cmp->SetOper(oper);
                 TryRangeCompare(cmp->AsOp(), jcc);
+                oper = cmp->OperGet();
             }
         }
         else if (oper == GT_NONE)
@@ -2790,8 +2791,279 @@ void Lowering::LowerCompare(GenTree* cmp)
 #endif // _TARGET_XARCH_
 }
 
+class SparseRangeRegion
+{
+    struct BitRange
+    {
+        size_t bits;
+        size_t lowerLimit;
+        size_t upperLimit;
+
+        BitRange(GenTreeIntCon* icon)
+            : bits(1)
+            , lowerLimit(static_cast<size_t>(icon->IconValue()))
+            , upperLimit(static_cast<size_t>(icon->IconValue()))
+        {
+        }
+
+        bool TryAddValue(GenTreeIntCon* icon)
+        {
+            size_t value = static_cast<size_t>(icon->IconValue());
+
+            if (value < lowerLimit)
+            {
+                size_t delta = lowerLimit - value;
+
+                if (delta + upperLimit > 63)
+                {
+                    return false;
+                }
+
+                lowerLimit -= delta;
+                bits <<= delta;
+            }
+            else if (value > upperLimit)
+            {
+                if (value - lowerLimit > 63)
+                {
+                    return false;
+                }
+
+                upperLimit = value;
+            }
+
+            bits |= (size_t(1) << (value - lowerLimit));
+            return true;
+        }
+
+        void Normalize()
+        {
+            if (lowerLimit != 0 && lowerLimit + upperLimit < 63)
+            {
+                bits <<= lowerLimit;
+                lowerLimit = 0;
+            }
+        }
+
+        void Dump()
+        {
+            //size_t b = bits;
+
+            //printf("range\n");
+            //printf("\tlower limit = %d\n", lowerLimit);
+            //printf("\tupper limit = %d\n", upperLimit);
+
+            //for (size_t i = lowerLimit; i <= upperLimit; i++)
+            //{
+            //    if (b & 1)
+            //        printf("\t%d\n", i);
+
+            //    b >>= 1;
+            //}
+        }
+    };
+
+    Compiler*      compiler;
+    BasicBlock*    regionEntry;
+    BasicBlock*    regionExit;
+    BasicBlock*    inRange;
+    BasicBlock*    outOfRange;
+    GenTree*       cmpEntry;
+    GenTree*       jccEntry;
+    GenTreeOp*     cmpExit;
+    GenTree*       jccExit;
+    GenTreeLclVar* lcl;
+    unsigned       regionLength;
+    BitRange       range;
+
+public:
+    SparseRangeRegion(Compiler* compiler, BasicBlock* regionExit, GenTreeOp* cmp, GenTreeCC* jcc)
+        : compiler(compiler)
+        , regionEntry(regionExit)
+        , regionExit(regionExit)
+        , inRange(regionExit->bbNext)
+        , outOfRange(regionExit->bbJumpDest)
+        , cmpEntry(cmp)
+        , jccEntry(jcc)
+        , cmpExit(cmp)
+        , jccExit(jcc)
+        , lcl(cmp->gtGetOp1()->AsLclVar())
+        , regionLength(1)
+        , range(cmp->gtGetOp2()->AsIntCon())
+    {
+    }
+
+    // We're looking for code like
+    //     cmp  ecx, 2
+    //     je   SHORT in_range
+    //     cmp  ecx, 3
+    //     je   SHORT in_range
+    //     cmp  ecx, 5
+    //     je   SHORT in_range
+    //     cmp  ecx, 10
+    //     jne  SHORT out_of_range
+    // in_range:
+    //     ...
+    // out_of_range:
+
+    bool TryExpandRegion()
+    {
+        BasicBlock* pred = regionEntry->GetUniquePred(compiler);
+
+        if ((pred == nullptr) || (pred->bbJumpKind != BBJ_COND))
+        {
+            return false;
+        }
+
+        if ((pred->bbNext != regionEntry) || (pred->bbJumpDest != inRange))
+        {
+            return false;
+        }
+
+        GenTree* jccPred = pred->lastNode();
+
+        if (!jccPred->OperIs(GT_JCC))
+        {
+            // It looks like the predecessor hasn't been lowered yet.
+            return false;
+        }
+
+        if (!jccPred->AsCC()->gtCondition.Is(GenCondition::EQ))
+        {
+            return false;
+        }
+
+        GenTree* cmpPred = jccPred->AsCC()->gtConditionDef;
+
+        if ((cmpPred == nullptr) || !cmpPred->OperIs(GT_CMP))
+        {
+            // Can't find the compare instruction. One reason may be that we
+            // already reused a compare in the predecessor. Now what? We need
+            // to store the flags definition in the jcc node it seems.
+            return false;
+        }
+
+        if (cmpPred->OperGet() != cmpExit->OperGet())
+        {
+            return false;
+        }
+
+        if (!cmpPred->gtGetOp2()->IsCnsIntOrI())
+        {
+            return false;
+        }
+
+        if (!compiler->gtCompareTree(lcl, cmpPred->gtGetOp1()))
+        {
+            return false;
+        }
+
+        regionLength++;
+        regionEntry = pred;
+        cmpEntry    = cmpPred;
+        jccEntry    = jccPred;
+
+        return range.TryAddValue(cmpPred->gtGetOp2()->AsIntCon());
+    }
+
+    static bool CanExecuteUnconditionally(GenTree* from)
+    {
+        // The code in this block needs to be executed unconditionally (with respect to
+        // predecessor conditions). Make sure we don't have any side effects.
+        // TODO Can we use the tree side effects here?
+        // TODO Can we allow indirs here? Probably we could if the address does not
+        // depend on the lclvar tested by predecessor conditions.
+        for (GenTree* prev = from->gtPrev; prev != nullptr; prev = prev->gtPrev)
+        {
+            if (!prev->OperIs(GT_IL_OFFSET, GT_PHI, GT_PHI_ARG, GT_LCL_VAR, GT_LEA, GT_CNS_INT, GT_CNS_DBL, GT_CMP))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    void BuildRegion()
+    {
+        do
+        {
+            if (!CanExecuteUnconditionally(cmpEntry))
+            {
+                break;
+            }
+        } while (TryExpandRegion());
+    }
+
+    bool OptimizeRegion()
+    {
+        BuildRegion();
+
+        if (regionLength < 3)
+        {
+            return false;
+        }
+
+        range.Normalize();
+
+        range.Dump();
+
+        if (range.lowerLimit != 0)
+        {
+            var_types type         = cmpEntry->gtGetOp1()->TypeGet();
+            GenTree*  lowerLimitOp = compiler->gtNewIconNode(range.lowerLimit, type);
+            GenTree*  sub          = compiler->gtNewOperNode(GT_SUB, type, cmpEntry->gtGetOp1(), lowerLimitOp);
+            cmpEntry->gtOp.gtOp1   = sub;
+
+            LIR::AsRange(regionEntry).InsertBefore(cmpEntry, lowerLimitOp, sub);
+        }
+
+        cmpEntry->gtGetOp2()->AsIntCon()->SetIconValue(range.upperLimit - range.lowerLimit);
+        jccEntry->AsCC()->gtCondition = GenCondition::UGT;
+        compiler->fgRemoveRefPred(inRange, regionEntry);
+        regionEntry->bbJumpDest = outOfRange;
+        compiler->fgAddRefPred(outOfRange, regionEntry);
+
+        cmpExit->SetOper(GT_BT);
+        cmpExit->gtGetOp2()->AsIntCon()->SetIconValue(range.bits);
+        cmpExit->gtGetOp2()->gtType = TYP_LONG;
+        std::swap(cmpExit->gtOp1, cmpExit->gtOp2);
+        jccExit->AsCC()->gtCondition = GenCondition::NC;
+
+        for (BasicBlock* block = regionEntry->bbNext; block != regionExit; block = block->bbNext)
+        {
+            LIR::AsRange(block).Delete(compiler, block, block->firstNode(), block->lastNode());
+            compiler->fgRemoveRefPred(inRange, block);
+            block->bbJumpKind = BBJ_NONE;
+        }
+
+        return false;
+    }
+};
+
+bool Lowering::TrySparseRangeCompare(GenTreeOp* cmp, GenTreeCC* jcc)
+{
+    assert(jcc->gtCondition.Is(GenCondition::NE));
+
+    GenTree*       cmpOp1 = cmp->gtGetOp1();
+    GenTreeIntCon* cmpOp2 = cmp->gtGetOp2()->AsIntCon();
+
+    if (!cmpOp1->OperIs(GT_LCL_VAR))
+    {
+        return false;
+    }
+
+    SparseRangeRegion sr(comp, m_block, cmp, jcc);
+    return sr.OptimizeRegion();
+}
+
 bool Lowering::TryRangeCompare(GenTreeOp* cmp, GenTreeCC* jcc)
 {
+    if (jcc->gtCondition.Is(GenCondition::NE))
+    {
+        return TrySparseRangeCompare(cmp, jcc);
+    }
+
     // We're looking for code like
     // if (3 < x && x < 10) { ... }
     // in asm this would look like
