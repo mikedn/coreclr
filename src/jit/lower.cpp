@@ -2702,7 +2702,6 @@ void Lowering::LowerCompare(GenTree* cmp)
         if (condition.IsUnordered() ? cmp->OperIs(GT_GT, GT_GE) : cmp->OperIs(GT_LT, GT_LE))
         {
             std::swap(cmp->gtOp.gtOp1, cmp->gtOp.gtOp2);
-            cmp->gtFlags ^= GTF_REVERSE_OPS;
             condition.Swap();
         }
     }
