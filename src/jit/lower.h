@@ -21,6 +21,43 @@ XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 
 class Lowering : public Phase
 {
+    class SparseRangeRegion
+    {
+        struct BitRange
+        {
+            size_t bits;
+            size_t lowerLimit;
+            size_t upperLimit;
+
+            BitRange();
+            BitRange(GenTreeIntCon* icon);
+            bool TryAddValue(GenTreeIntCon* icon);
+            void Normalize();
+            void Dump();
+        };
+
+        Compiler*   compiler;
+        unsigned    regionLength;
+        BasicBlock* regionEntry;
+        BasicBlock* regionExit;
+        BasicBlock* regionNext;
+        BasicBlock* regionJump;
+        GenTreeOp*  cmpEntry;
+        GenTreeOp*  cmpExit;
+        unsigned    lclNum;
+        BitRange    range;
+
+        static bool CanExecuteUnconditionally(GenTree* from);
+        bool TryStartRegion(BasicBlock* block);
+        bool TryExpandRegion(BasicBlock* block);
+        bool OptimizeRegion(Lowering* lowering);
+        void ClearRegion();
+
+    public:
+        SparseRangeRegion(Compiler* compiler);
+        void AddBlock(Lowering* lowering, BasicBlock* block);
+    };
+
 public:
     inline Lowering(Compiler* compiler, LinearScanInterface* lsra)
         : Phase(compiler, "Lowering", PHASE_LOWERING), vtableCallTemp(BAD_VAR_NUM)
@@ -84,7 +121,7 @@ private:
     void ContainCheckArrOffset(GenTreeArrOffs* node);
     void ContainCheckLclHeap(GenTreeOp* node);
     void ContainCheckRet(GenTreeOp* node);
-    void ContainCheckJTrue(GenTreeOp* node);
+    void ContainCheckJTrue(GenTreeUnOp* node);
 
     void ContainCheckCallOperands(GenTreeCall* call);
     void ContainCheckIndir(GenTreeIndir* indirNode);
@@ -129,7 +166,8 @@ private:
 #endif
     GenTree* OptimizeConstCompare(GenTree* cmp);
     GenTree* LowerCompare(GenTree* cmp);
-    GenTree* LowerJTrue(GenTreeOp* jtrue);
+    GenTree* LowerJTrue(GenTreeUnOp* jtrue);
+    bool TryRangeCompare(BasicBlock* block, GenTreeOp* cmp);
     void LowerJmpMethod(GenTree* jmp);
     void LowerRet(GenTree* ret);
     GenTree* LowerDelegateInvoke(GenTreeCall* call);
