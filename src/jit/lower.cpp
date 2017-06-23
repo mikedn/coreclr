@@ -168,6 +168,10 @@ GenTree* Lowering::LowerNode(GenTree* node)
             LowerCompare(node);
             break;
 
+        case GT_JTRUE:
+            LowerJTrue(node->AsUnOp());
+            break;
+
         case GT_JMP:
             LowerJmpMethod(node);
             break;
@@ -2385,6 +2389,496 @@ void Lowering::LowerCompare(GenTree* cmp)
 #endif // _TARGET_XARCH_
 }
 
+void Lowering::LowerJTrue(GenTreeUnOp* jtrue)
+{
+    GenTreeOp* cmp = jtrue->gtGetOp1()->AsOp();
+
+    if (cmp->OperIs(GT_LT, GT_LE, GT_GT, GT_GE) && cmp->gtGetOp1()->OperIs(GT_LCL_VAR) || cmp->gtGetOp2()->IsCnsIntOrI())
+    {
+        TryRangeCompare(cmp, jtrue);
+    }
+}
+
+Lowering::SparseRangeRegion::BitRange::BitRange()
+    : bits(1)
+    , lowerLimit(0)
+    , upperLimit(0)
+{
+}
+
+Lowering::SparseRangeRegion::BitRange::BitRange(GenTreeIntCon* icon)
+    : bits(1)
+    , lowerLimit(static_cast<size_t>(icon->IconValue()))
+    , upperLimit(static_cast<size_t>(icon->IconValue()))
+{
+}
+
+bool Lowering::SparseRangeRegion::BitRange::TryAddValue(GenTreeIntCon* icon)
+{
+    size_t value = static_cast<size_t>(icon->IconValue());
+
+    if (value < lowerLimit)
+    {
+        size_t delta = lowerLimit - value;
+
+        if (delta + upperLimit > 63)
+        {
+            return false;
+        }
+
+        lowerLimit -= delta;
+        bits <<= delta;
+    }
+    else if (value > upperLimit)
+    {
+        if (value - lowerLimit > 63)
+        {
+            return false;
+        }
+
+        upperLimit = value;
+    }
+
+    bits |= (size_t(1) << (value - lowerLimit));
+    return true;
+}
+
+void Lowering::SparseRangeRegion::BitRange::Normalize()
+{
+    if (lowerLimit != 0 && lowerLimit + upperLimit < 63)
+    {
+        bits <<= lowerLimit;
+        lowerLimit = 0;
+    }
+}
+
+void Lowering::SparseRangeRegion::BitRange::Dump()
+{
+    size_t b = bits;
+
+    printf("range\n");
+    printf("\tlower limit = %d\n", lowerLimit);
+    printf("\tupper limit = %d\n", upperLimit);
+
+    for (size_t i = lowerLimit; i <= upperLimit; i++)
+    {
+        if (b & 1)
+            printf("\t%d\n", i);
+
+        b >>= 1;
+    }
+}
+
+Lowering::SparseRangeRegion::SparseRangeRegion(Compiler* compiler)
+    : compiler(compiler)
+    , regionLength(0)
+{
+}
+
+void Lowering::SparseRangeRegion::AddBlock(BasicBlock* block)
+{
+    if (regionLength == 0)
+    {
+        TryStartRegion(block);
+    }
+    else if (!TryExpandRegion(block))
+    {
+        OptimizeRegion();
+        ClearRegion();
+    }
+}
+
+bool Lowering::SparseRangeRegion::TryStartRegion(BasicBlock* block)
+{
+    if (block->bbJumpKind != BBJ_COND)
+    {
+        return false;
+    }
+
+    GenTreeUnOp* jcc = block->lastNode()->AsUnOp();
+
+    if (!jcc->OperIs(GT_JTRUE))
+    {
+        return false;
+    }
+
+    GenTreeOp* cmp = jcc->gtGetOp1()->AsOp();
+
+    if (!cmp->OperIs(GT_EQ) || !cmp->gtGetOp1()->OperIs(GT_LCL_VAR) || !cmp->gtGetOp2()->IsCnsIntOrI())
+    {
+        return false;
+    }
+
+    regionEntry = block;
+    regionExit = block;
+    regionNext = block->bbNext;
+    regionJump = block->bbJumpDest;
+
+    cmpEntry = cmp;
+    cmpExit = cmp;
+
+    lclNum = cmp->gtGetOp1()->AsLclVar()->GetLclNum();
+    range = BitRange(cmp->gtGetOp2()->AsIntCon());
+
+    regionLength = 1;
+
+    return true;
+}
+
+// We're looking for code like
+//     cmp  ecx, 2
+//     je   SHORT in_range
+//     cmp  ecx, 3
+//     je   SHORT in_range
+//     cmp  ecx, 5
+//     je   SHORT in_range
+//     cmp  ecx, 10
+//     jne  SHORT out_of_range
+// in_range:
+//     ...
+// out_of_range:
+
+bool Lowering::SparseRangeRegion::TryExpandRegion(BasicBlock* block)
+{
+    if (block->bbJumpKind != BBJ_COND)
+    {
+        return false;
+    }
+
+    GenTree* jcc = block->lastNode();
+
+    if (!jcc->OperIs(GT_JTRUE))
+    {
+        return false;
+    }
+
+    GenTreeOp* cmp = jcc->gtGetOp1()->AsOp();
+
+    if (!cmp->OperIs(GT_EQ, GT_NE) || !cmp->gtGetOp1()->OperIs(GT_LCL_VAR) || !cmp->gtGetOp2()->IsCnsIntOrI())
+    {
+        return false;
+    }
+
+    if (lclNum != cmp->gtGetOp1()->AsLclVar()->GetLclNum())
+    {
+        return false;
+    }
+
+    if (block->GetUniquePred(compiler) != regionExit)
+    {
+        return false;
+    }
+
+    if (regionExit->bbJumpDest == block->bbJumpDest) 
+    {
+        if (cmpExit->OperGet() != cmp->OperGet())
+        {
+            return false;
+        }
+    }
+    else if (regionExit->bbJumpDest == block->bbNext)
+    {
+        if (cmpExit->OperGet() != GenTree::ReverseRelop(cmp->OperGet()))
+        {
+            return false;
+        }
+    }
+    else
+    {
+        return false;
+    }
+
+    if (!range.TryAddValue(cmp->gtGetOp2()->AsIntCon()))
+    {
+        return false;
+    }
+
+    if (!CanExecuteUnconditionally(cmp))
+    {
+        return false;
+    }
+
+    regionExit = block;
+    regionNext = block->bbNext;
+    cmpExit    = cmp;
+    regionLength++;
+
+    return true;
+}
+
+bool Lowering::SparseRangeRegion::CanExecuteUnconditionally(GenTree* from)
+{
+    // The code in this block needs to be executed unconditionally (with respect to
+    // predecessor conditions). Make sure we don't have any side effects.
+    // TODO Can we use the tree side effects here?
+    // TODO Can we allow indirs here? Probably we could if the address does not
+    // depend on the lclvar tested by predecessor conditions.
+    for (GenTree* prev = from->gtPrev; prev != nullptr; prev = prev->gtPrev)
+    {
+        if (!prev->OperIs(GT_IL_OFFSET, GT_PHI, GT_PHI_ARG, GT_LCL_VAR, GT_LEA, GT_CNS_INT, GT_CNS_DBL, GT_CMP) && !prev->OperIsCompare())
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool Lowering::SparseRangeRegion::OptimizeRegion()
+{
+    if (regionLength < 3)
+    {
+        return false;
+    }
+
+    range.Normalize();
+    range.Dump();
+
+    if (range.lowerLimit != 0)
+    {
+        var_types type = cmpEntry->gtGetOp1()->TypeGet();
+        GenTree*  lowerLimitOp = compiler->gtNewIconNode(range.lowerLimit, type);
+        GenTree*  sub = compiler->gtNewOperNode(GT_SUB, type, cmpEntry->gtGetOp1(), lowerLimitOp);
+        cmpEntry->gtOp.gtOp1 = sub;
+
+        LIR::AsRange(regionEntry).InsertBefore(cmpEntry, lowerLimitOp, sub);
+    }
+
+    cmpEntry->gtGetOp2()->AsIntCon()->SetIconValue(range.upperLimit - range.lowerLimit);
+    cmpEntry->SetOper(GT_GT);
+    cmpEntry->gtFlags |= GTF_UNSIGNED;
+
+    GenTreeIntCon* bits = cmpExit->gtGetOp2()->AsIntCon();
+    bits->SetIconValue(range.bits);
+    bits->gtType = TYP_LONG;
+
+    GenTree* shift = compiler->gtNewOperNode(GT_RSZ, TYP_LONG, bits, cmpExit->gtGetOp1());
+    GenTree* one = compiler->gtNewIconNode(1, TYP_LONG);
+
+    cmpExit->SetOper(GT_TEST_EQ);
+    cmpExit->gtType = TYP_LONG;
+    cmpExit->gtOp1 = shift;
+    cmpExit->gtOp2 = one;
+
+    LIR::AsRange(regionExit).InsertBefore(cmpExit, shift, one);
+
+    if (regionJump != regionNext)
+    {
+        compiler->fgRemoveRefPred(regionJump, regionEntry);
+        regionEntry->bbJumpDest = regionNext;
+        compiler->fgAddRefPred(regionNext, regionEntry);
+        regionNext->bbFlags |= BBF_JMP_TARGET;
+        cmpExit->SetOper(GT_TEST_NE);
+    }
+    else
+    {
+        compiler->fgRemoveRefPred(regionNext, regionEntry);
+        regionEntry->bbJumpDest = regionJump;
+        compiler->fgAddRefPred(regionJump, regionEntry);
+    }
+
+    for (BasicBlock* block = regionEntry->bbNext; block != regionExit; block = block->bbNext)
+    {
+        LIR::AsRange(block).Delete(compiler, block, block->firstNode(), block->lastNode());
+        compiler->fgRemoveRefPred(regionJump, block);
+        block->bbJumpKind = BBJ_NONE;
+    }
+
+    return false;
+}
+
+void Lowering::SparseRangeRegion::ClearRegion()
+{
+    regionLength = 0;
+}
+
+bool Lowering::TryRangeCompare(GenTreeOp* cmp, GenTreeUnOp* jcc)
+{    
+    // We're looking for code like
+    // if (3 < x && x < 10) { ... }
+    // in asm this would look like
+    // pred:
+    //     cmp x, 3
+    //     jle out_of_range
+    // m_block:
+    //     cmp x, 10
+    //     jge out_of_range
+    // in_range:
+
+    // or like
+    //
+    // pred:
+    //     cmp x, 3
+    //     jle out_of_range
+    // m_block:
+    //     cmp x, 10
+    //     jle in_range
+    // out_of_range:
+    //
+    
+    //
+    // There must be an unique predecessor. Well, not really but keep it simple for now.
+    // It's actually possible to have multiple range tests that share a limit test (though
+    // that's probably rare and strange, a shared limit test implies that ranges overlap).
+    //
+
+    BasicBlock* pred = m_block->GetUniquePred(comp);
+
+    if ((pred == nullptr) || (pred->bbJumpKind != BBJ_COND) || (pred->bbNext != m_block))
+    {
+        return false;
+    }
+
+    bool inverted;
+
+    if (pred->bbJumpDest == m_block->bbJumpDest)
+    {
+        inverted = false;
+    }
+    else if (pred->bbJumpDest == m_block->bbNext)
+    {
+        inverted = true;
+    }
+    else
+    {
+        return false;
+    }
+
+    GenTree* predJcc = pred->lastNode();
+
+    if (!predJcc->OperIs(GT_JTRUE))
+    {
+        // It looks like the predecessor has been lowered to something other than GT_JTRUE.
+        return false;
+    }
+
+    GenTree* predCmp = predJcc->gtGetOp1();
+
+    if (!predCmp->OperIs(GT_LT, GT_LE, GT_GT, GT_GE))
+    {
+        return false;
+    }
+
+    GenTree* predCmpOp1 = predCmp->gtGetOp1();
+    GenTree* predCmpOp2 = predCmp->gtGetOp2();
+
+    if (!predCmpOp1->OperIs(GT_LCL_VAR) || !predCmpOp2->IsCnsIntOrI())
+    {
+        return false;
+    }
+
+    GenTree* cmpOp1 = cmp->gtGetOp1();
+    GenTree* cmpOp2 = cmp->gtGetOp2();
+
+    if (predCmpOp1->AsLclVar()->GetLclNum() != cmpOp1->AsLclVar()->GetLclNum())
+    {
+        return false;
+    }
+
+    if (predCmp->IsUnsigned() != cmp->IsUnsigned())
+    {
+        return false;
+    }
+
+    // The code in this block needs to be executed unconditionally (with respect to
+    // predecessor's condition). Make sure we don't have any side effects.
+    // TODO Can we use the tree side effects here?
+    // TODO Can we allow indirs here? Probably we could if the address does not
+    // depend on the lclvar tested by the predecessor condition.
+    for (GenTree* prev = cmp->gtPrev; prev != nullptr; prev = prev->gtPrev)
+    {
+        if (!prev->OperIs(GT_IL_OFFSET, GT_PHI, GT_PHI_ARG, GT_LCL_VAR, GT_LEA, GT_CNS_INT, GT_CNS_DBL))
+        {
+            return false;
+        }
+    }
+
+    genTreeOps     lCond =    predCmp->OperGet();
+    GenTreeIntCon* lLimitOp = predCmp->gtGetOp2()->AsIntCon();
+
+    genTreeOps     uCond    = cmp->OperGet();
+    GenTreeIntCon* uLimitOp = cmp->gtGetOp2()->AsIntCon();
+
+    if (inverted)
+    {
+        uCond = GenTree::ReverseRelop(uCond);
+    }
+
+    if (lCond == uCond)
+    {
+        return false;
+    }
+
+    ssize_t lLimit = lLimitOp->IconValue();
+    ssize_t uLimit = uLimitOp->IconValue();
+
+    if (lLimit > uLimit)
+    {
+        // The limit tests are reveresed, swap limits and conditions.
+        std::swap(lLimitOp, uLimitOp);
+        std::swap(lLimit, uLimit);
+        std::swap(lCond, uCond);
+    }
+
+    // For clarity change the conditions so we get the cannonical form
+    // (lLimit < x && x < uLimit) rather than (!(x > lLimit) && !(x < uLimit)).
+    lCond = GenTree::ReverseRelop(lCond);
+    lCond = GenTree::SwapRelop(lCond);
+    uCond = GenTree::ReverseRelop(uCond);
+
+    // TODO Watch out for integer overflow
+    if (lCond == GT_LT)
+    {
+        lLimit++;
+    }
+    else if (lCond != GT_LE)
+    {
+        return false;
+    }
+
+    if (uCond == GT_LT)
+    {
+        uLimit--;
+    }
+    else if (uCond != GT_LE)
+    {
+        return false;
+    }
+
+    LIR::Range& predRange = LIR::AsRange(pred);
+    comp->lvaDecRefCnts(pred, predCmpOp1);
+    predRange.Remove(predCmpOp1);
+    predRange.Remove(predCmpOp2);
+    predRange.Remove(predCmp);
+    predRange.Remove(predJcc);
+
+    comp->fgRemoveRefPred(pred->bbJumpDest, pred);
+    pred->bbJumpKind = BBJ_NONE;
+
+    if (lLimit != 0)
+    {
+        BlockRange().Remove(cmpOp2);
+
+        uLimitOp->SetIconValue(uLimit - lLimit);
+        lLimitOp->SetIconValue(-lLimit);
+
+        GenTree* sub = comp->gtNewOperNode(GT_ADD, cmpOp1->TypeGet(), cmpOp1, lLimitOp);
+        cmp->gtOp1   = sub;
+        cmp->gtOp2   = uLimitOp;
+
+        BlockRange().InsertBefore(cmp, lLimitOp, sub, uLimitOp);
+    }
+    else
+    {
+        cmp->gtGetOp2()->AsIntCon()->SetIconValue(uLimit);
+    }
+
+    cmp->SetOper(inverted ? GT_LE : GT_GT);
+    cmp->gtFlags |= GTF_UNSIGNED;
+
+    return true;
+}
+
 // Lower "jmp <method>" tail call to insert PInvoke method epilog if required.
 void Lowering::LowerJmpMethod(GenTree* jmp)
 {
@@ -4471,6 +4965,8 @@ void Lowering::DoPhase()
 #if !defined(_TARGET_64BIT_)
         decomp.DecomposeBlock(block);
 #endif //!_TARGET_64BIT_
+
+        m_region.AddBlock(block);
 
         LowerBlock(block);
     }

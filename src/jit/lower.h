@@ -21,9 +21,46 @@ XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 
 class Lowering : public Phase
 {
+    class SparseRangeRegion
+    {
+        struct BitRange
+        {
+            size_t bits;
+            size_t lowerLimit;
+            size_t upperLimit;
+
+            BitRange();
+            BitRange(GenTreeIntCon* icon);
+            bool TryAddValue(GenTreeIntCon* icon);
+            void Normalize();
+            void Dump();
+        };
+
+        Compiler*      compiler;
+        unsigned       regionLength;
+        BasicBlock*    regionEntry;
+        BasicBlock*    regionExit;
+        BasicBlock*    regionNext;
+        BasicBlock*    regionJump;
+        GenTree*       cmpEntry;
+        GenTreeOp*     cmpExit;
+        unsigned       lclNum;
+        BitRange       range;
+
+        static bool CanExecuteUnconditionally(GenTree* from);
+        bool TryStartRegion(BasicBlock* block);
+        bool TryExpandRegion(BasicBlock* block);
+        bool OptimizeRegion();
+        void ClearRegion();
+    
+    public:
+        SparseRangeRegion(Compiler* compiler);
+        void AddBlock(BasicBlock* block);
+    };
+
 public:
     inline Lowering(Compiler* compiler, LinearScanInterface* lsra)
-        : Phase(compiler, "Lowering", PHASE_LOWERING), vtableCallTemp(BAD_VAR_NUM)
+        : Phase(compiler, "Lowering", PHASE_LOWERING), vtableCallTemp(BAD_VAR_NUM), m_region(compiler)
     {
         m_lsra = (LinearScan*)lsra;
         assert(m_lsra);
@@ -64,6 +101,8 @@ private:
     // ------------------------------
     void LowerCall(GenTree* call);
     void LowerCompare(GenTree* tree);
+    void LowerJTrue(GenTreeUnOp* jtrue);
+    bool TryRangeCompare(GenTreeOp* cmp, GenTreeUnOp* jcc);
     void LowerJmpMethod(GenTree* jmp);
     void LowerRet(GenTree* ret);
     GenTree* LowerDelegateInvoke(GenTreeCall* call);
@@ -300,6 +339,7 @@ private:
     unsigned      vtableCallTemp;       // local variable we use as a temp for vtable calls
     SideEffectSet m_scratchSideEffects; // SideEffectSet used for IsSafeToContainMem and isRMWIndirCandidate
     BasicBlock*   m_block;
+    SparseRangeRegion m_region;
 };
 
 #endif // _LOWER_H_
