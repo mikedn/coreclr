@@ -6427,8 +6427,45 @@ void CodeGen::genIntToIntCast(GenTreePtr treeNode)
 {
     assert(treeNode->OperGet() == GT_CAST);
 
-    GenTreePtr castOp  = treeNode->gtCast.CastOp();
-    var_types  srcType = genActualType(castOp->TypeGet());
+    GenTreePtr castOp = treeNode->gtCast.CastOp();
+
+#ifdef _TARGET_64BIT_
+    if (castOp->isUsedFromMemory())
+    {
+        assert(!treeNode->gtOverflow());
+
+        var_types fromType = castOp->TypeGet();
+        emitAttr  fromSize = emitTypeSize(fromType);
+        var_types toType   = treeNode->CastToType();
+        emitAttr  toSize   = emitTypeSize(toType);
+
+        if (toSize < fromSize)
+        {
+            fromType = toType;
+            fromSize = toSize;
+        }
+
+        assert(fromSize <= EA_4BYTE);
+
+        instruction ins;
+
+        if (varTypeIsUnsigned(fromType) || treeNode->IsUnsigned())
+        {
+            ins = (fromSize < EA_4BYTE) ? INS_movzx : INS_mov;
+        }
+        else
+        {
+            ins = (fromSize < EA_4BYTE) ? INS_movsx : INS_movsxd;
+        }
+
+        genConsumeRegs(castOp);
+        getEmitter()->emitInsBinary(ins, fromSize, treeNode, castOp);
+        genProduceReg(treeNode);
+        return;
+    }
+#endif
+
+    var_types srcType = genActualType(castOp->TypeGet());
     noway_assert(genTypeSize(srcType) >= 4);
 
 #ifdef _TARGET_X86_

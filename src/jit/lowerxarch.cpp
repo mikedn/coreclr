@@ -1718,6 +1718,20 @@ void Lowering::ContainCheckCast(GenTreeCast* node)
         castOp->SetContained();
     }
 #endif // !defined(_TARGET_64BIT_)
+
+#ifdef _TARGET_64BIT_
+    if (!node->gtOverflow() && varTypeIsIntegral(castToType) && varTypeIsIntegral(srcType))
+    {
+        if (IsContainableMemoryOp(castOp, true))
+        {
+            MakeSrcContained(node, castOp);
+        }
+        else
+        {
+            SetRegOptional(castOp);
+        }
+    }
+#endif
 }
 
 //------------------------------------------------------------------------
