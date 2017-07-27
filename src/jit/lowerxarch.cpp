@@ -1720,7 +1720,7 @@ void Lowering::ContainCheckCast(GenTreeCast* node)
 #endif // !defined(_TARGET_64BIT_)
 
 #ifdef _TARGET_64BIT_
-    if (!node->gtOverflow() && varTypeIsIntegral(castToType) && varTypeIsIntegral(srcType))
+    if (varTypeIsIntegral(castToType) && varTypeIsIntegral(srcType))
     {
         if (IsContainableMemoryOp(castOp, true))
         {

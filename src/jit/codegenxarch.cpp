@@ -6423,6 +6423,19 @@ void CodeGen::genLongToIntCast(GenTree* cast)
 // TODO-XArch-CQ: Allow castOp to be a contained node without an assigned register.
 // TODO: refactor to use getCastDescription
 //
+
+ssize_t genTypeIntMin(var_types type)
+{
+    unsigned bitSize = (genTypeSize(type) * 8) - (varTypeIsUnsigned(type) ? 0 : 1);
+    return varTypeIsUnsigned(type) ? 0 : (ssize_t(-1) << bitSize);
+}
+
+ssize_t genTypeIntMax(var_types type)
+{
+    unsigned bitSize = (genTypeSize(type) * 8) - (varTypeIsUnsigned(type) ? 0 : 1);
+    return (ssize_t(1) << bitSize) - 1;
+}
+
 void CodeGen::genIntToIntCast(GenTreePtr treeNode)
 {
     assert(treeNode->OperGet() == GT_CAST);
@@ -6432,34 +6445,88 @@ void CodeGen::genIntToIntCast(GenTreePtr treeNode)
 #ifdef _TARGET_64BIT_
     if (castOp->isUsedFromMemory())
     {
-        assert(!treeNode->gtOverflow());
+        //assert(!treeNode->gtOverflow());
 
-        var_types fromType = castOp->TypeGet();
-        emitAttr  fromSize = emitTypeSize(fromType);
+        var_types memType  = castOp->TypeGet();
+        emitAttr  memSize  = emitTypeSize(memType);
+        var_types fromType = memType;
+        emitAttr  fromSize = memSize;
         var_types toType   = treeNode->CastToType();
         emitAttr  toSize   = emitTypeSize(toType);
+        bool      overflow = treeNode->gtOverflow();
 
-        if (toSize < fromSize)
+        if ((toSize < fromSize) && !overflow)
         {
             fromType = toType;
             fromSize = toSize;
         }
 
-        assert(fromSize <= EA_4BYTE);
+        //assert(fromSize <= EA_4BYTE);
 
         instruction ins;
 
         if (varTypeIsUnsigned(fromType) || treeNode->IsUnsigned())
         {
-            ins = (fromSize < EA_4BYTE) ? INS_movzx : INS_mov;
+            if (fromSize < EA_4BYTE)
+            {
+                ins = INS_movzx;
+            }
+            else
+            {
+                ins = INS_mov;
+            }
         }
         else
         {
-            ins = (fromSize < EA_4BYTE) ? INS_movsx : INS_movsxd;
+            if (fromSize < EA_4BYTE)
+            {
+                ins = INS_movsx;
+            }
+            else if (fromSize == EA_4BYTE)
+            {
+                ins = INS_movsxd;
+            }
+            else
+            {
+                ins = INS_mov;
+            }
         }
 
         genConsumeRegs(castOp);
         getEmitter()->emitInsBinary(ins, fromSize, treeNode, castOp);
+
+        if (overflow)
+        {
+            regNumber targetReg = treeNode->gtRegNum;
+
+            if (toSize >= fromSize)
+            {
+                getEmitter()->emitIns_R_R(INS_test, max(EA_4BYTE, fromSize), targetReg, targetReg);
+                genJumpToThrowHlpBlk(EJ_js, SCK_OVERFLOW);
+            }
+            else if (toType == TYP_UINT)
+            {
+                assert(fromSize == EA_8BYTE);
+
+                regNumber tempReg = treeNode->GetSingleTempReg();
+                getEmitter()->emitIns_R_R(INS_mov, EA_8BYTE, tempReg, targetReg);
+                getEmitter()->emitIns_R_I(INS_shr_N, fromSize, tempReg, 32);
+                genJumpToThrowHlpBlk(EJ_jne, SCK_OVERFLOW);
+            }
+            else if (varTypeIsUnsigned(toType))
+            {
+                getEmitter()->emitIns_R_I(INS_cmp, max(EA_4BYTE, fromSize), targetReg, genTypeIntMax(toType));
+                genJumpToThrowHlpBlk(EJ_ja, SCK_OVERFLOW);
+            }
+            else
+            {
+                getEmitter()->emitIns_R_I(INS_cmp, max(EA_4BYTE, fromSize), targetReg, genTypeIntMin(toType));
+                genJumpToThrowHlpBlk(EJ_jl, SCK_OVERFLOW);
+                getEmitter()->emitIns_R_I(INS_cmp, max(EA_4BYTE, fromSize), targetReg, genTypeIntMax(toType));
+                genJumpToThrowHlpBlk(EJ_jg, SCK_OVERFLOW);
+            }
+        }
+
         genProduceReg(treeNode);
         return;
     }
