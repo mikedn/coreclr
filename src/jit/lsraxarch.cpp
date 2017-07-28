@@ -2593,7 +2593,7 @@ void Lowering::TreeNodeInfoInitCast(GenTree* tree)
         {
             // Here we don't need internal register to be different from targetReg,
             // rather require it to be different from operand's reg.
-            info->internalIntCount = 1;
+            info->internalIntCount       = 1;
             info->isInternalRegDelayFree = 1;
         }
     }

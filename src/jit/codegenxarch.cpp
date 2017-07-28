@@ -6445,23 +6445,20 @@ void CodeGen::genIntToIntCast(GenTreePtr treeNode)
 #ifdef _TARGET_64BIT_
     if (castOp->isUsedFromMemory())
     {
-        //assert(!treeNode->gtOverflow());
-
-        var_types memType  = castOp->TypeGet();
-        emitAttr  memSize  = emitTypeSize(memType);
-        var_types fromType = memType;
-        emitAttr  fromSize = memSize;
+        var_types fromType = castOp->TypeGet();
+        emitAttr  fromSize = emitTypeSize(fromType);
         var_types toType   = treeNode->CastToType();
         emitAttr  toSize   = emitTypeSize(toType);
         bool      overflow = treeNode->gtOverflow();
 
-        if ((toSize < fromSize) && !overflow)
+        if (toSize < fromSize)
         {
-            fromType = toType;
-            fromSize = toSize;
+            if (!overflow)
+            {
+                fromType = toType;
+                fromSize = toSize;
+            }
         }
-
-        //assert(fromSize <= EA_4BYTE);
 
         instruction ins;
 
@@ -6502,28 +6499,29 @@ void CodeGen::genIntToIntCast(GenTreePtr treeNode)
             if (toSize >= fromSize)
             {
                 getEmitter()->emitIns_R_R(INS_test, max(EA_4BYTE, fromSize), targetReg, targetReg);
-                genJumpToThrowHlpBlk(EJ_js, SCK_OVERFLOW);
-            }
-            else if (toType == TYP_UINT)
-            {
-                assert(fromSize == EA_8BYTE);
-
-                regNumber tempReg = treeNode->GetSingleTempReg();
-                getEmitter()->emitIns_R_R(INS_mov, EA_8BYTE, tempReg, targetReg);
-                getEmitter()->emitIns_R_I(INS_shr_N, fromSize, tempReg, 32);
-                genJumpToThrowHlpBlk(EJ_jne, SCK_OVERFLOW);
+                genJumpToThrowHlpBlk(EJ_jl, SCK_OVERFLOW);
             }
             else if (varTypeIsUnsigned(toType))
             {
-                getEmitter()->emitIns_R_I(INS_cmp, max(EA_4BYTE, fromSize), targetReg, genTypeIntMax(toType));
-                genJumpToThrowHlpBlk(EJ_ja, SCK_OVERFLOW);
+                if (toType == TYP_UINT)
+                {
+                    regNumber tempReg = treeNode->GetSingleTempReg();
+                    getEmitter()->emitIns_R_R(INS_mov, EA_8BYTE, tempReg, targetReg);
+                    getEmitter()->emitIns_R_I(INS_shr_N, fromSize, tempReg, 32);
+                    genJumpToThrowHlpBlk(EJ_jne, SCK_OVERFLOW);
+                }
+                else
+                {
+                    getEmitter()->emitIns_R_I(INS_cmp, max(EA_4BYTE, fromSize), targetReg, genTypeIntMax(toType));
+                    genJumpToThrowHlpBlk(EJ_ja, SCK_OVERFLOW);
+                }
             }
             else
             {
-                getEmitter()->emitIns_R_I(INS_cmp, max(EA_4BYTE, fromSize), targetReg, genTypeIntMin(toType));
-                genJumpToThrowHlpBlk(EJ_jl, SCK_OVERFLOW);
                 getEmitter()->emitIns_R_I(INS_cmp, max(EA_4BYTE, fromSize), targetReg, genTypeIntMax(toType));
                 genJumpToThrowHlpBlk(EJ_jg, SCK_OVERFLOW);
+                getEmitter()->emitIns_R_I(INS_cmp, max(EA_4BYTE, fromSize), targetReg, genTypeIntMin(toType));
+                genJumpToThrowHlpBlk(EJ_jl, SCK_OVERFLOW);
             }
         }
 
