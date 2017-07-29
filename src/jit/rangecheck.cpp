@@ -190,6 +190,51 @@ bool RangeCheck::BetweenBounds(Range& range, int lower, GenTree* upper)
 
 void RangeCheck::OptimizeRangeCheck(BasicBlock* block, GenTree* stmt, GenTree* treeParent)
 {
+    if (treeParent->OperIs(GT_CAST))
+    {
+        GenTreeCast* cast = treeParent->AsCast();
+        
+        if ((cast->CastToType() != TYP_LONG) || (cast->CastFromType() != TYP_INT) || cast->IsUnsigned())
+        {
+            return;
+        }
+
+        m_pCurBndsChk = nullptr;
+
+        GetRangeMap()->RemoveAll();
+        GetOverflowMap()->RemoveAll();
+        m_pSearchPath = new (m_alloc) SearchPath(m_alloc);
+
+        Range range = GetRange(block, cast->gtGetOp1(), false DEBUGARG(0));
+
+        if (range.UpperLimit().IsUnknown() || range.LowerLimit().IsUnknown())
+        {
+            return;
+        }
+
+        if (DoesOverflow(block, cast->gtGetOp1()))
+        {
+            JITDUMP("Value determined to overflow.\n");
+            return;
+        }
+
+        JITDUMP("Range value %s\n", range.ToString(m_pCompiler->getAllocatorDebugOnly()));
+        m_pSearchPath->RemoveAll();
+        Widen(block, cast->gtGetOp1(), &range);
+
+        if (range.UpperLimit().IsUnknown() || range.LowerLimit().IsUnknown())
+        {
+            return;
+        }
+
+        if (range.lLimit.IsConstant() && (range.lLimit.GetConstant() >= 0) && range.uLimit.IsBinOpArray())
+        {
+            cast->gtFlags |= GTF_UNSIGNED;
+        }
+
+        return;
+    }
+
     // Check if we are dealing with a bounds check node.
     if (treeParent->OperGet() != GT_COMMA)
     {
@@ -626,15 +671,23 @@ void RangeCheck::MergeEdgeAssertions(GenTreeLclVarCommon* lcl, ASSERT_VALARG_TP 
         }
 #endif
 
-        ValueNum arrLenVN = m_pCompiler->vnStore->VNConservativeNormalValue(m_pCurBndsChk->gtArrLen->gtVNPair);
-
-        if (m_pCompiler->vnStore->IsVNConstant(arrLenVN))
-        {
-            // Set arrLenVN to NoVN; this will make it match the "vn" recorded on
-            // constant limits (where we explicitly track the constant and don't
-            // redundantly store its VN in the "vn" field).
-            arrLenVN = ValueNumStore::NoVN;
-        }
+		ValueNum arrLenVN;
+		
+		if (m_pCurBndsChk == nullptr)
+		{
+			arrLenVN = ValueNumStore::NoVN;
+		}
+		else
+		{
+			arrLenVN = m_pCompiler->vnStore->VNConservativeNormalValue(m_pCurBndsChk->gtArrLen->gtVNPair);
+			if (m_pCompiler->vnStore->IsVNConstant(arrLenVN))
+			{
+				// Set arrLenVN to NoVN; this will make it match the "vn" recorded on
+				// constant limits (where we explicitly track the constant and don't
+				// redundantly store its VN in the "vn" field).
+				arrLenVN = ValueNumStore::NoVN;
+			}
+		}
 
         // During assertion prop we add assertions of the form:
         //
@@ -669,13 +722,13 @@ void RangeCheck::MergeEdgeAssertions(GenTreeLclVarCommon* lcl, ASSERT_VALARG_TP 
         }
 
         // Doesn't tighten the current bound. So skip.
-        if (pRange->uLimit.IsConstant() && limit.vn != arrLenVN)
+        if (pRange->uLimit.IsConstant() && (limit.vn != arrLenVN && m_pCurBndsChk != nullptr))
         {
             continue;
         }
 
         // Check if the incoming limit from assertions tightens the existing upper limit.
-        if (pRange->uLimit.IsBinOpArray() && (pRange->uLimit.vn == arrLenVN))
+        if (pRange->uLimit.IsBinOpArray() && (pRange->uLimit.vn == arrLenVN && m_pCurBndsChk != nullptr))
         {
             // We have checked the current range's (pRange's) upper limit is either of the form:
             //      length + cns
@@ -746,6 +799,11 @@ void RangeCheck::MergeAssertion(BasicBlock* block, GenTree* op, Range* pRange DE
     JITDUMP("Merging assertions from pred edges of " FMT_BB " for op [%06d] " FMT_VN "\n", block->bbNum,
             Compiler::dspTreeID(op), m_pCompiler->vnStore->VNConservativeNormalValue(op->gtVNPair));
     ASSERT_TP assertions = BitVecOps::UninitVal();
+
+    if (m_pCompiler->GetAssertionCount() == 0)
+    {
+        return;
+    }
 
     // If we have a phi arg, we can get to the block from it and use its assertion out.
     if (op->gtOper == GT_PHI_ARG)
