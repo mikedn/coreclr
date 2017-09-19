@@ -623,6 +623,9 @@ public:
     // Check if "vn" is "a.len"
     bool IsVNArrLen(ValueNum vn);
 
+    // Check if "vn" is "a.len"
+    bool IsVNPositive(ValueNum vn);
+
     // If "vn" is VN(a.len) then return VN(a); NoVN if VN(a) can't be determined.
     ValueNum GetArrForLenVn(ValueNum vn);
 

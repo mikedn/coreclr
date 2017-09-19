@@ -3439,6 +3439,31 @@ int ValueNumStore::GetNewArrSize(ValueNum vn)
     return 0;
 }
 
+bool ValueNumStore::IsVNPositive(ValueNum vn)
+{
+    if (vn == NoVN)
+    {
+        return false;
+    }
+    if (IsVNInt32Constant(vn) && GetConstantInt32(vn) >= 0)
+    {
+        return true;
+    }
+    VNFuncApp funcAttr;
+    if (GetVNFunc(vn, &funcAttr))
+    {
+        if (funcAttr.m_func == GT_ARR_LENGTH)
+        {
+            return true;
+        }
+        else if (funcAttr.m_func == GT_AND)
+        {
+            return IsVNPositive(funcAttr.m_args[0]) || IsVNPositive(funcAttr.m_args[1]);
+        }
+    }
+    return false;
+}
+
 bool ValueNumStore::IsVNArrLen(ValueNum vn)
 {
     if (vn == NoVN)

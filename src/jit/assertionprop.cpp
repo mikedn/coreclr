@@ -858,9 +858,9 @@ AssertionIndex Compiler::optCreateAssertion(GenTreePtr       op1,
     bool      haveArgs       = false;
     var_types toType;
 
-    if (op1->gtOper == GT_ARR_BOUNDS_CHECK)
+    if (assertionKind == OAK_NO_THROW)
     {
-        if (assertionKind == OAK_NO_THROW)
+        if (op1->gtOper == GT_ARR_BOUNDS_CHECK)
         {
             GenTreeBoundsChk* arrBndsChk = op1->AsBoundsChk();
             assertion->assertionKind     = assertionKind;
@@ -869,6 +869,18 @@ AssertionIndex Compiler::optCreateAssertion(GenTreePtr       op1,
             assertion->op1.bnd.vnLen     = arrBndsChk->gtArrLen->gtVNPair.GetConservative();
             goto DONE_ASSERTION;
         }
+        else if ((op1->OperIs(GT_UMOD) ||
+                  (op1->OperIs(GT_MOD) && vnStore->IsVNPositive(op1->gtGetOp1()->gtVNPair.GetConservative()))) &&
+                 vnStore->IsVNArrLen(op1->gtGetOp2()->gtVNPair.GetConservative()))
+        {
+            assertion->assertionKind = assertionKind;
+            assertion->op1.kind      = O1K_ARR_BND;
+            assertion->op1.bnd.vnIdx = op1->gtVNPair.GetConservative();
+            assertion->op1.bnd.vnLen = op1->gtGetOp2()->gtVNPair.GetConservative();
+            goto DONE_ASSERTION;
+        }
+
+        return NO_ASSERTION_INDEX;
     }
 
     //
@@ -2088,6 +2100,14 @@ void Compiler::optAssertionGen(GenTreePtr tree)
         case GT_ARR_ELEM:
             // An array element reference can create a non-null assertion
             assertionInfo = optCreateAssertion(tree->gtArrElem.gtArrObj, nullptr, OAK_NOT_EQUAL);
+            break;
+
+        case GT_UMOD:
+        case GT_MOD:
+            if (!optLocalAssertionProp)
+            {
+                assertionInfo = optCreateAssertion(tree, nullptr, OAK_NO_THROW);
+            }
             break;
 
         case GT_CALL:
