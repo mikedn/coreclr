@@ -2350,8 +2350,8 @@ GenTree* Lowering::LowerCompare(GenTree* cmp)
             GenTree* jcc    = cmpUse.User();
             jcc->gtOp.gtOp1 = nullptr;
             jcc->ChangeOper(GT_JCC);
-            jcc->gtFlags |= (cmp->gtFlags & GTF_UNSIGNED) | GTF_USE_FLAGS;
-            jcc->AsCC()->gtCondition = condition;
+            jcc->gtFlags |= GTF_USE_FLAGS;
+            jcc->AsCC()->gtCondition = GenCondition::FromIntegralRelop(condition, cmp->IsUnsigned());
         }
         else
         {
@@ -2359,7 +2359,8 @@ GenTree* Lowering::LowerCompare(GenTree* cmp)
             cmp->gtOp.gtOp2 = nullptr;
             cmp->ChangeOper(GT_SETCC);
             cmp->gtFlags |= GTF_USE_FLAGS;
-            cmp->AsCC()->gtCondition = condition;
+            cmp->AsCC()->gtCondition = GenCondition::FromIntegralRelop(condition, cmp->IsUnsigned());
+            ;
         }
 
         return cmp->gtNext;
@@ -2584,7 +2585,7 @@ GenTree* Lowering::LowerCompare(GenTree* cmp)
         if (lsh->OperIs(GT_LSH) && varTypeIsIntOrI(lsh->TypeGet()) && lsh->gtGetOp1()->IsIntegralConst(1) &&
             BlockRange().TryGetUse(cmp, &cmpUse))
         {
-            genTreeOps condition = cmp->OperIs(GT_TEST_NE) ? GT_LT : GT_GE;
+            GenCondition condition = cmp->OperIs(GT_TEST_NE) ? GenCondition::C : GenCondition::NC;
 
             cmp->SetOper(GT_BT);
             cmp->gtType = TYP_VOID;
@@ -2610,7 +2611,7 @@ GenTree* Lowering::LowerCompare(GenTree* cmp)
                 cmpUse.ReplaceWith(comp, cc);
             }
 
-            cc->gtFlags |= GTF_USE_FLAGS | GTF_UNSIGNED;
+            cc->gtFlags |= GTF_USE_FLAGS;
 
             return cmp->gtNext;
         }
@@ -2667,10 +2668,10 @@ GenTree* Lowering::LowerCompare(GenTree* cmp)
                 ccOp = GT_SETCC;
             }
 
-            genTreeOps condition = cmp->OperGet();
+            GenCondition condition = GenCondition::FromIntegralRelop(cmp);
             cc->ChangeOper(ccOp);
             cc->AsCC()->gtCondition = condition;
-            cc->gtFlags |= GTF_USE_FLAGS | (cmp->gtFlags & GTF_UNSIGNED);
+            cc->gtFlags |= GTF_USE_FLAGS;
 
             return next;
         }

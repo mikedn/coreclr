@@ -1558,20 +1558,153 @@ void CodeGen::genCodeForJumpTrue(GenTreePtr tree)
     }
 }
 
+struct GenConditionDesc
+{
+    instruction ins[2];
+    bool        jmpToTrueLabel[2];
+};
+
+static const GenConditionDesc& GetConditionDesc(GenCondition condition)
+{
+    // clang-format off
+    static const GenConditionDesc map[32]
+    {
+        { { INS_je,  INS_invalid }, { true,  true } }, // EQ
+        { { INS_jne, INS_invalid }, { true,  true } }, // NE
+        { { INS_jl,  INS_invalid }, { true,  true } }, // SLT
+        { { INS_jle, INS_invalid }, { true,  true } }, // SLE
+        { { INS_jge, INS_invalid }, { true,  true } }, // SGE
+        { { INS_jg,  INS_invalid }, { true,  true } }, // SGT
+        { { INS_js,  INS_invalid }, { true,  true } }, // S
+        { { INS_jns, INS_invalid }, { true,  true } }, // NS
+
+        { { INS_je,  INS_invalid }, { true,  true } }, // EQ
+        { { INS_jne, INS_invalid }, { true,  true } }, // NE
+        { { INS_jb,  INS_invalid }, { true,  true } }, // ULT
+        { { INS_jbe, INS_invalid }, { true,  true } }, // ULE
+        { { INS_jae, INS_invalid }, { true,  true } }, // UGE
+        { { INS_ja,  INS_invalid }, { true,  true } }, // UGT
+        { { INS_jb,  INS_invalid }, { true,  true } }, // C
+        { { INS_jae, INS_invalid }, { true,  true } }, // NC
+
+        { { INS_jpe, INS_je      }, { false, true } }, // FEQ
+        { { INS_jne, INS_invalid }, { true,  true } }, // FNE
+        { },                                           // FLT
+        { },                                           // FLE
+        { { INS_jae, INS_invalid }, { true,  true } }, // FGE
+        { { INS_ja,  INS_invalid }, { true,  true } }, // FGT
+        { { INS_jo,  INS_invalid }, { true,  true } }, // O
+        { { INS_jno, INS_invalid }, { true,  true } }, // NO
+
+        { { INS_je,  INS_invalid }, { true,  true } }, // FEQU
+        { { INS_jpe, INS_jne     }, { true,  true } }, // FNEU
+        { { INS_jb,  INS_invalid }, { true,  true } }, // FLTU
+        { { INS_jbe, INS_invalid }, { true,  true } }, // FLEU
+        { },                                           // FGEU
+        { },                                           // FGTU
+        { { INS_jpe, INS_invalid }, { true,  true } }, // P
+        { { INS_jpo, INS_invalid }, { true,  true } }, // NP
+    };
+    // clang-format on
+
+    assert(condition.Value() < COUNTOF(map));
+    const GenConditionDesc& desc = map[condition.Value()];
+    assert(desc.ins[0] != INS_invalid);
+    return desc;
+}
+
+static instruction ReverseJcc(instruction jcc)
+{
+    static const instruction reverse[]{
+        INS_jno, // INS_jo
+        INS_jo,  // INS_jno
+        INS_jae, // INS_jb
+        INS_jb,  // INS_jae
+        INS_jne, // INS_je
+        INS_je,  // INS_jne
+        INS_ja,  // INS_jbe
+        INS_jbe, // INS_ja
+        INS_jns, // INS_js
+        INS_js,  // INS_jns
+        INS_jpo, // INS_jpe
+        INS_jpe, // INS_jpo
+        INS_jge, // INS_jl
+        INS_jl,  // INS_jge
+        INS_jg,  // INS_jle
+        INS_jle  // INS_jg
+    };
+
+    assert((INS_jo <= jcc) && (jcc <= INS_jg));
+    return reverse[jcc - INS_jo];
+}
+
+void CodeGen::instJcc(instruction jcc, BasicBlock* target)
+{
+    assert((INS_jo <= jcc) && (jcc <= INS_jg));
+
+#if !FEATURE_FIXED_OUT_ARGS
+    // On the x86 we are pushing (and changing the stack level), but on x64 and other archs we have
+    // a fixed outgoing args area that we store into and we never change the stack level when calling methods.
+    //
+    // Thus only on x86 do we need to assert that the stack level at the target block matches the current stack level.
+    //
+    CLANG_FORMAT_COMMENT_ANCHOR;
+
+#ifdef UNIX_X86_ABI
+    // bbTgtStkDepth is a (pure) argument count (stack alignment padding should be excluded).
+    assert((target->bbTgtStkDepth * sizeof(int) == (genStackLevel - curNestedAlignment)) || isFramePointerUsed());
+#else
+    assert((target->bbTgtStkDepth * sizeof(int) == genStackLevel) || isFramePointerUsed());
+#endif
+#endif // !FEATURE_FIXED_OUT_ARGS
+
+    getEmitter()->emitIns_J(jcc, target);
+}
+
+void CodeGen::instSetcc(instruction jcc, regNumber reg)
+{
+    assert((INS_jo <= jcc) && (jcc <= INS_jg));
+    assert(genIsValidIntReg(reg));
+    assert(isByteReg(reg));
+
+    getEmitter()->emitIns_R(static_cast<instruction>((jcc - INS_jo) + INS_seto), EA_1BYTE, reg);
+}
+
 //------------------------------------------------------------------------
 // genCodeForJcc: Produce code for a GT_JCC node.
 //
 // Arguments:
-//    tree - the node
+//    jcc - the JCC node
 //
-void CodeGen::genCodeForJcc(GenTreeCC* tree)
+void CodeGen::genCodeForJcc(GenTreeCC* jcc)
 {
     assert(compiler->compCurBB->bbJumpKind == BBJ_COND);
 
-    CompareKind  compareKind = ((tree->gtFlags & GTF_UNSIGNED) != 0) ? CK_UNSIGNED : CK_SIGNED;
-    emitJumpKind jumpKind    = genJumpKindForOper(tree->gtCondition, compareKind);
+    const GenConditionDesc& desc = GetConditionDesc(jcc->gtCondition);
 
-    inst_JMP(jumpKind, compiler->compCurBB->bbJumpDest);
+    if (desc.ins[1] == INS_invalid)
+    {
+        instJcc(desc.ins[0], compiler->compCurBB->bbJumpDest);
+    }
+    else
+    {
+        BasicBlock* jmpTarget = compiler->compCurBB->bbJumpDest;
+        BasicBlock* skipLabel = nullptr;
+
+        if (!desc.jmpToTrueLabel[0])
+        {
+            skipLabel = genCreateTempLabel();
+            jmpTarget = skipLabel;
+        }
+
+        instJcc(desc.ins[0], jmpTarget);
+        instJcc(desc.ins[1], compiler->compCurBB->bbJumpDest);
+
+        if (skipLabel != nullptr)
+        {
+            genDefineTempLabel(skipLabel);
+        }
+    }
 }
 
 //------------------------------------------------------------------------
@@ -1580,25 +1713,27 @@ void CodeGen::genCodeForJcc(GenTreeCC* tree)
 // Arguments:
 //    tree - the GT_SETCC node
 //
-// Assumptions:
-//    The condition represents an integer comparison. This code doesn't
-//    have the necessary logic to deal with floating point comparisons,
-//    in fact it doesn't even know if the comparison is integer or floating
-//    point because SETCC nodes do not have any operands.
-//
 
 void CodeGen::genCodeForSetcc(GenTreeCC* setcc)
 {
-    regNumber    dstReg      = setcc->gtRegNum;
-    CompareKind  compareKind = setcc->IsUnsigned() ? CK_UNSIGNED : CK_SIGNED;
-    emitJumpKind jumpKind    = genJumpKindForOper(setcc->gtCondition, compareKind);
+    regNumber dstReg = setcc->gtRegNum;
 
-    assert(genIsValidIntReg(dstReg) && isByteReg(dstReg));
-    // Make sure nobody is setting GTF_RELOP_NAN_UN on this node as it is ignored.
-    assert((setcc->gtFlags & GTF_RELOP_NAN_UN) == 0);
+    const GenConditionDesc& desc = GetConditionDesc(setcc->gtCondition);
 
-    inst_SET(jumpKind, dstReg);
-    inst_RV_RV(ins_Move_Extend(TYP_UBYTE, true), dstReg, dstReg, TYP_UBYTE, emitTypeSize(TYP_UBYTE));
+    if (desc.ins[1] == INS_invalid)
+    {
+        instSetcc(desc.ins[0], dstReg);
+    }
+    else
+    {
+        instSetcc(desc.jmpToTrueLabel[0] ? desc.ins[0] : ReverseJcc(desc.ins[0]), dstReg);
+        BasicBlock* skipLabel = genCreateTempLabel();
+        instJcc(desc.ins[0], skipLabel);
+        instSetcc(desc.ins[1], dstReg);
+        genDefineTempLabel(skipLabel);
+    }
+
+    getEmitter()->emitIns_R_R(INS_movzx, EA_1BYTE, dstReg, dstReg);
     genProduceReg(setcc);
 }
 

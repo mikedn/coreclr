@@ -3334,20 +3334,74 @@ void CodeGen::genCodeForJumpTrue(GenTreePtr tree)
     }
 }
 
+struct GenConditionDesc
+{
+    instruction ins[2];
+};
+
+static const GenConditionDesc& GetConditionDesc(GenCondition condition)
+{
+    // clang-format off
+    static constexpr GenConditionDesc map[32]
+    {
+        { { INS_beq, INS_invalid } }, // EQ
+        { { INS_bne, INS_invalid } }, // NE
+        { { INS_blt, INS_invalid } }, // SLT
+        { { INS_ble, INS_invalid } }, // SLE
+        { { INS_bge, INS_invalid } }, // SGE
+        { { INS_bgt, INS_invalid } }, // SGT
+        { { INS_bmi, INS_invalid } }, // S
+        { { INS_bpl, INS_invalid } }, // NS
+
+        { { INS_beq, INS_invalid } }, // EQ
+        { { INS_bne, INS_invalid } }, // NE
+        { { INS_blo, INS_invalid } }, // ULT
+        { { INS_bls, INS_invalid } }, // ULE
+        { { INS_bhs, INS_invalid } }, // UGE
+        { { INS_bhi, INS_invalid } }, // UGT
+        { { INS_bhs, INS_invalid } }, // C
+        { { INS_blo, INS_invalid } }, // NC
+
+        { { INS_beq, INS_invalid } }, // FEQ
+        { { INS_bgt, INS_blo     } }, // FNE
+        { { INS_blo, INS_invalid } }, // FLT
+        { { INS_bls, INS_invalid } }, // FLE
+        { { INS_blo, INS_invalid } }, // FGE
+        { { INS_bls, INS_invalid } }, // FGT
+        { { INS_bvs, INS_invalid } }, // O
+        { { INS_bvc, INS_invalid } }, // NO
+
+        { { INS_beq, INS_bvs     } }, // FEQU
+        { { INS_bne, INS_invalid } }, // FNEU
+        { { INS_blt, INS_invalid } }, // FLTU
+        { { INS_ble, INS_invalid } }, // FLEU
+        { { INS_bhs, INS_invalid } }, // FGEU
+        { { INS_bhi, INS_invalid } }, // FGTU
+        { },                          // P
+        { },                          // NP
+    };
+    // clang-format on
+
+    assert(condition.Value() < COUNTOF(map));
+    const GenConditionDesc& desc = map[condition.Value()];
+    assert(desc.ins[0] != INS_invalid);
+    return desc;
+}
+
 //------------------------------------------------------------------------
 // genCodeForJcc: Produce code for a GT_JCC node.
 //
 // Arguments:
 //    tree - the node
 //
-void CodeGen::genCodeForJcc(GenTreeCC* tree)
+void CodeGen::genCodeForJcc(GenTreeCC* jcc)
 {
     assert(compiler->compCurBB->bbJumpKind == BBJ_COND);
 
-    CompareKind  compareKind = ((tree->gtFlags & GTF_UNSIGNED) != 0) ? CK_UNSIGNED : CK_SIGNED;
-    emitJumpKind jumpKind    = genJumpKindForOper(tree->gtCondition, compareKind);
+    const GenConditionDesc& desc = GetConditionDesc(jcc->gtCondition);
 
-    inst_JMP(jumpKind, compiler->compCurBB->bbJumpDest);
+    getEmitter()->emitIns_J(desc.ins[0], compiler->compCurBB->bbJumpDest);
+    assert(desc.ins[1] == INS_invalid);
 }
 
 //------------------------------------------------------------------------
@@ -3365,16 +3419,15 @@ void CodeGen::genCodeForJcc(GenTreeCC* tree)
 
 void CodeGen::genCodeForSetcc(GenTreeCC* setcc)
 {
-    regNumber    dstReg      = setcc->gtRegNum;
-    CompareKind  compareKind = setcc->IsUnsigned() ? CK_UNSIGNED : CK_SIGNED;
-    emitJumpKind jumpKind    = genJumpKindForOper(setcc->gtCondition, compareKind);
+    regNumber               dstReg = setcc->gtRegNum;
+    const GenConditionDesc& desc   = GetConditionDesc(setcc->gtCondition);
 
-    assert(genIsValidIntReg(dstReg));
     // Make sure nobody is setting GTF_RELOP_NAN_UN on this node as it is ignored.
     assert((setcc->gtFlags & GTF_RELOP_NAN_UN) == 0);
 
 #ifdef _TARGET_ARM64_
-    inst_SET(jumpKind, dstReg);
+    getEmitter()->emitIns_R_COND(INS_cset, EA_8BYTE, dstReg, static_cast<insCond>(desc.ins[0] - INS_beq));
+    assert(desc.ins[1] == INS_invalid);
 #else
     // Emit code like that:
     //   ...
@@ -3387,7 +3440,8 @@ void CodeGen::genCodeForSetcc(GenTreeCC* setcc)
     //   ...
 
     BasicBlock* labelTrue = genCreateTempLabel();
-    getEmitter()->emitIns_J(emitter::emitJumpKindToIns(jumpKind), labelTrue);
+    getEmitter()->emitIns_J(desc.ins[0], labelTrue);
+    assert(desc.ins[1] == INS_invalid);
 
     getEmitter()->emitIns_R_I(INS_mov, emitActualTypeSize(setcc->TypeGet()), dstReg, 0);
 

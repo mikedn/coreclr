@@ -822,6 +822,8 @@ public:
     void instGen(instruction ins);
 #ifdef _TARGET_XARCH_
     void instNop(unsigned size);
+    void instJcc(instruction ins, BasicBlock* target);
+    void instSetcc(instruction ins, regNumber reg);
 #endif
 
     void inst_JMP(emitJumpKind jmp, BasicBlock* tgtBlock);
