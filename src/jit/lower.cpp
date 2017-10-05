@@ -2617,7 +2617,7 @@ GenTree* Lowering::LowerCompare(GenTree* cmp)
         }
 #endif // _TARGET_XARCH_
     }
-    else if (cmp->OperIs(GT_EQ, GT_NE))
+    else
     {
         GenTree* op1 = cmp->gtGetOp1();
         GenTree* op2 = cmp->gtGetOp2();
@@ -2628,13 +2628,25 @@ GenTree* Lowering::LowerCompare(GenTree* cmp)
         // after op1 do not modify the flags so that it is safe to avoid generating a
         // test instruction.
 
+        GenCondition condition = GenCondition::FromRelop(cmp);
+
         if (op2->IsIntegralConst(0) && (op1->gtNext == op2) && (op2->gtNext == cmp) &&
 #ifdef _TARGET_XARCH_
-            op1->OperIs(GT_AND, GT_OR, GT_XOR, GT_ADD, GT_SUB, GT_NEG))
+            op1->OperIs(GT_AND, GT_OR, GT_XOR, GT_ADD, GT_SUB, GT_NEG) &&
 #else // _TARGET_ARM64_
-            op1->OperIs(GT_AND, GT_ADD, GT_SUB))
+            op1->OperIs(GT_AND, GT_ADD, GT_SUB) &&
 #endif
+            condition.Is(GenCondition::EQ, GenCondition::NE, GenCondition::SLT, GenCondition::SGE))
         {
+            if (condition.Is(GenCondition::SLT))
+            {
+                condition = GenCondition::S;
+            }
+            else if (condition.Is(GenCondition::SGE))
+            {
+                condition = GenCondition::NS;
+            }
+
             op1->gtFlags |= GTF_SET_FLAGS;
             op1->SetUnusedValue();
 
@@ -2668,7 +2680,6 @@ GenTree* Lowering::LowerCompare(GenTree* cmp)
                 ccOp = GT_SETCC;
             }
 
-            GenCondition condition = GenCondition::FromIntegralRelop(cmp);
             cc->ChangeOper(ccOp);
             cc->AsCC()->gtCondition = condition;
             cc->gtFlags |= GTF_USE_FLAGS;
