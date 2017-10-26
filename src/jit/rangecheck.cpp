@@ -18,8 +18,10 @@ RangeCheck::RangeCheck(Compiler* pCompiler)
     : m_pOverflowMap(nullptr)
     , m_pRangeMap(nullptr)
     , m_pSearchPath(nullptr)
+#ifdef DEBUG
     , m_fMappedDefs(false)
     , m_pDefTable(nullptr)
+#endif
     , m_pCompiler(pCompiler)
     , m_alloc(pCompiler, CMK_RangeCheck)
     , m_nVisitBudget(MAX_VISIT_BUDGET)
@@ -387,13 +389,17 @@ bool RangeCheck::IsMonotonicallyIncreasing(GenTreePtr expr)
     // If the rhs expr is local, then try to find the def of the local.
     else if (expr->IsLocal())
     {
-        Location* loc = GetDef(expr->AsLclVarCommon());
-        if (loc == nullptr)
+        BasicBlock* asgBlock;
+        GenTreeOp*  asg = GetSsaDefAsg(expr->AsLclVarCommon(), &asgBlock);
+        if (asg == nullptr)
         {
             return false;
         }
-        GenTreePtr asg = loc->parent;
-        assert(asg->OperIsAssignment());
+#ifdef DEBUG
+        Location* loc = GetDef(expr->AsLclVarCommon());
+        assert(asg == loc->parent);
+        assert(asgBlock == loc->block);
+#endif
         switch (asg->OperGet())
         {
             case GT_ASG:
@@ -401,7 +407,7 @@ bool RangeCheck::IsMonotonicallyIncreasing(GenTreePtr expr)
 
 #ifdef LEGACY_BACKEND
             case GT_ASG_ADD:
-                return IsBinOpMonotonicallyIncreasing(asg->AsOp());
+                return IsBinOpMonotonicallyIncreasing(asg);
 #endif
 
             default:
@@ -439,6 +445,40 @@ bool RangeCheck::IsMonotonicallyIncreasing(GenTreePtr expr)
     return false;
 }
 
+// Given a lclvar use, try to find the lclvar's defining assignment and its containing block.
+GenTreeOp* RangeCheck::GetSsaDefAsg(GenTreeLclVarCommon* lclUse, BasicBlock** asgBlock)
+{
+    unsigned ssaNum = lclUse->GetSsaNum();
+
+    if (ssaNum == SsaConfig::RESERVED_SSA_NUM)
+    {
+        return nullptr;
+    }
+
+    LclSsaVarDsc* ssaData = m_pCompiler->lvaTable[lclUse->GetLclNum()].GetPerSsaData(ssaNum);
+    GenTree*      lclDef  = ssaData->m_defLoc.m_tree;
+
+    if (lclDef == nullptr)
+    {
+        return nullptr;
+    }
+
+    // We have the def node but we also need the assignment node to get its source.
+    // gtGetParent can be used to get the assignment node but it's rather expensive
+    // and not strictly necessary here, there shouldn't be any other node between
+    // the assignment node and its destination node.
+    GenTree* asg = lclDef->gtNext;
+
+    if (!asg->OperIsAssignment())
+    {
+        return nullptr;
+    }
+
+    *asgBlock = ssaData->m_defLoc.m_blk;
+    return asg->AsOp();
+}
+
+#ifdef DEBUG
 UINT64 RangeCheck::HashCode(unsigned lclNum, unsigned ssaNum)
 {
     assert(ssaNum != SsaConfig::RESERVED_SSA_NUM);
@@ -489,6 +529,7 @@ void RangeCheck::SetDef(UINT64 hash, Location* loc)
 #endif
     m_pDefTable->Set(hash, loc);
 }
+#endif
 
 // Merge assertions on the edge flowing into the block about a variable.
 void RangeCheck::MergeEdgeAssertions(GenTreeLclVarCommon* lcl, ASSERT_VALARG_TP assertions, Range* pRange)
@@ -825,15 +866,18 @@ Range RangeCheck::ComputeRangeForLocalDef(BasicBlock*          block,
                                           GenTreeLclVarCommon* lcl,
                                           bool monotonic DEBUGARG(int indent))
 {
-    // Get the program location of the def.
-    Location* loc = GetDef(lcl);
-
-    // If we can't reach the def, then return unknown range.
-    if (loc == nullptr)
+    BasicBlock* asgBlock;
+    GenTreeOp*  asg = GetSsaDefAsg(lcl, &asgBlock);
+    if (asg == nullptr)
     {
         return Range(Limit(Limit::keUnknown));
     }
 #ifdef DEBUG
+    // Get the program location of the def.
+    Location* loc = GetDef(lcl);
+    assert(asg == loc->parent);
+    assert(asgBlock == loc->block);
+
     if (m_pCompiler->verbose)
     {
         JITDUMP("----------------------------------------------------\n");
@@ -841,14 +885,12 @@ Range RangeCheck::ComputeRangeForLocalDef(BasicBlock*          block,
         JITDUMP("----------------------------------------------------\n");
     }
 #endif
-    GenTreePtr asg = loc->parent;
-    assert(asg->OperIsAssignment());
     switch (asg->OperGet())
     {
         // If the operator of the definition is assignment, then compute the range of the rhs.
         case GT_ASG:
         {
-            Range range = GetRange(loc->block, asg->gtGetOp2(), monotonic DEBUGARG(indent));
+            Range range = GetRange(asgBlock, asg->gtGetOp2(), monotonic DEBUGARG(indent));
             if (!BitVecOps::MayBeUninit(block->bbAssertionIn))
             {
                 JITDUMP("Merge assertions from BB%02d:%s for assignment about [%06d]\n", block->bbNum,
@@ -865,7 +907,7 @@ Range RangeCheck::ComputeRangeForLocalDef(BasicBlock*          block,
             // If the operator of the definition is +=, then compute the range of the operands of +.
             // Note that gtGetOp1 will return op1 to be the lhs; in the formulation of ssa, we have
             // a side table for defs and the lhs of a += is considered to be a use for SSA numbering.
-            return ComputeRangeForBinOp(loc->block, asg->AsOp(), monotonic DEBUGARG(indent));
+            return ComputeRangeForBinOp(asgBlock, asg, monotonic DEBUGARG(indent));
 #endif
 
         default:
@@ -998,24 +1040,26 @@ bool RangeCheck::DoesBinOpOverflow(BasicBlock* block, GenTreeOp* binop)
 // Check if the var definition the rhs involves arithmetic that overflows.
 bool RangeCheck::DoesVarDefOverflow(GenTreeLclVarCommon* lcl)
 {
-    // Get the definition.
-    Location* loc = GetDef(lcl);
-    if (loc == nullptr)
+    BasicBlock* asgBlock;
+    GenTreeOp*  asg = GetSsaDefAsg(lcl, &asgBlock);
+    if (asg == nullptr)
     {
         return true;
     }
-    // Get the parent node which is an asg.
-    GenTreePtr asg = loc->parent;
-    assert(asg->OperIsAssignment());
+#ifdef DEBUG
+    Location* loc = GetDef(lcl);
+    assert(asg == loc->parent);
+    assert(asgBlock == loc->block);
+#endif
     switch (asg->OperGet())
     {
         case GT_ASG:
-            return DoesOverflow(loc->block, asg->gtGetOp2());
+            return DoesOverflow(asgBlock, asg->gtGetOp2());
 
 #ifdef LEGACY_BACKEND
         case GT_ASG_ADD:
             // For GT_ASG_ADD, op2 is use, op1 is also use since we side table for defs in useasg case.
-            return DoesBinOpOverflow(loc->block, asg->AsOp());
+            return DoesBinOpOverflow(asgBlock, asg);
 #endif
 
         default:
@@ -1231,6 +1275,7 @@ Range RangeCheck::GetRange(BasicBlock* block, GenTreePtr expr, bool monotonic DE
     return range;
 }
 
+#ifdef DEBUG
 // If this is a tree local definition add its location to the def map.
 void RangeCheck::MapStmtDefs(const Location& loc)
 {
@@ -1303,6 +1348,7 @@ void RangeCheck::MapMethodDefs()
     }
     m_fMappedDefs = true;
 }
+#endif
 
 // Entry point to range check optimizations.
 void RangeCheck::OptimizeRangeChecks()
