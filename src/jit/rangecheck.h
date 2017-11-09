@@ -424,6 +424,10 @@ public:
     typedef JitHashTable<GenTreePtr, JitPtrKeyFuncs<GenTree>, BasicBlock*> SearchPath;
 
 #ifdef DEBUG
+    // TODO-Cleanup: This code has been kept around just to ensure that the SSA data is still
+    // valid when RangeCheck runs. It should be removed at some point (and perhaps replaced
+    // by a proper SSA validity checker).
+
     // Location information is used to map where the defs occur in the method.
     struct Location
     {

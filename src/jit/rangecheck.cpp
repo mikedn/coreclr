@@ -395,11 +395,7 @@ bool RangeCheck::IsMonotonicallyIncreasing(GenTreePtr expr)
         {
             return false;
         }
-#ifdef DEBUG
-        Location* loc = GetDef(expr->AsLclVarCommon());
-        assert(asg == loc->parent);
-        assert(asgBlock == loc->block);
-#endif
+
         switch (asg->OperGet())
         {
             case GT_ASG:
@@ -469,10 +465,16 @@ GenTreeOp* RangeCheck::GetSsaDefAsg(GenTreeLclVarCommon* lclUse, BasicBlock** as
     // the assignment node and its destination node.
     GenTree* asg = lclDef->gtNext;
 
-    if (!asg->OperIsAssignment())
+    if (!asg->OperIsAssignment() || (asg->gtGetOp1() != lclDef))
     {
         return nullptr;
     }
+
+#ifdef DEBUG
+    Location* loc = GetDef(lclUse);
+    assert(loc->parent == asg);
+    assert(loc->block == ssaData->m_defLoc.m_blk);
+#endif
 
     *asgBlock = ssaData->m_defLoc.m_blk;
     return asg->AsOp();
@@ -873,15 +875,10 @@ Range RangeCheck::ComputeRangeForLocalDef(BasicBlock*          block,
         return Range(Limit(Limit::keUnknown));
     }
 #ifdef DEBUG
-    // Get the program location of the def.
-    Location* loc = GetDef(lcl);
-    assert(asg == loc->parent);
-    assert(asgBlock == loc->block);
-
     if (m_pCompiler->verbose)
     {
         JITDUMP("----------------------------------------------------\n");
-        m_pCompiler->gtDispTree(loc->stmt);
+        m_pCompiler->gtDispTree(asg);
         JITDUMP("----------------------------------------------------\n");
     }
 #endif
@@ -1046,11 +1043,7 @@ bool RangeCheck::DoesVarDefOverflow(GenTreeLclVarCommon* lcl)
     {
         return true;
     }
-#ifdef DEBUG
-    Location* loc = GetDef(lcl);
-    assert(asg == loc->parent);
-    assert(asgBlock == loc->block);
-#endif
+
     switch (asg->OperGet())
     {
         case GT_ASG:
