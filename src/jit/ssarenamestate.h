@@ -57,24 +57,25 @@ class SsaRenameState
 {
     struct BlockState
     {
-        BasicBlock* m_bb;
-        unsigned    m_count;
+        unsigned m_bbNum;
+        unsigned m_count;
 
-        BlockState(BasicBlock* bb, unsigned count) : m_bb(bb), m_count(count)
+        BlockState(unsigned bbNum, unsigned count) : m_bbNum(bbNum), m_count(count)
         {
         }
-        BlockState() : m_bb(nullptr), m_count(0)
+
+        BlockState() : m_bbNum(0), m_count(0)
         {
         }
     };
 
-    // A record indicating that local "m_loc" was defined in block "m_bb".
+    // A record indicating that local "m_lclNum" was defined in block "m_bbNum".
     struct LclDefState
     {
-        BasicBlock* m_bb;
-        unsigned    m_lclNum;
+        unsigned m_bbNum;
+        unsigned m_lclNum;
 
-        LclDefState(BasicBlock* bb, unsigned lclNum) : m_bb(bb), m_lclNum(lclNum)
+        LclDefState(unsigned bbNum, unsigned lclNum) : m_bbNum(bbNum), m_lclNum(lclNum)
         {
         }
     };
@@ -130,7 +131,7 @@ public:
             // Share rename stacks in this configuration.
             memoryKind = ByrefExposed;
         }
-        memoryStack[memoryKind].push_back(BlockState(bb, count));
+        memoryStack[memoryKind].push_back(BlockState(bb->bbNum, count));
     }
 
     void PopBlockMemoryStack(MemoryKind memoryKind, BasicBlock* bb);
