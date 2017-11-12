@@ -97,6 +97,18 @@ unsigned SsaRenameState::GetTopSsaNum(unsigned lclNum)
     return stack->m_ssaNum;
 }
 
+void SsaRenameState::PushInit(unsigned lclNum, unsigned ssaNum)
+{
+    EnsureStacks();
+
+    // We'll use BB00 here to indicate the "block before any real blocks..."
+    DBG_SSA_JITDUMP("[SsaRenameState::PushInit] BB%02u, V%02u, count = %d\n", 0, lclNum, ssaNum);
+
+    BlockState* state = m_stacks[lclNum];
+    assert(state == nullptr);
+    m_stacks[lclNum] = new (m_alloc) BlockState(state, 0, ssaNum);
+}
+
 /**
  * Pushes a count value on the variable stack.
  *
@@ -110,8 +122,7 @@ void SsaRenameState::Push(BasicBlock* bb, unsigned lclNum, unsigned ssaNum)
 {
     EnsureStacks();
 
-    // We'll use BB00 here to indicate the "block before any real blocks..."
-    unsigned bbNum = (bb == nullptr) ? 0 : bb->bbNum;
+    unsigned bbNum = bb->bbNum;
 
     DBG_SSA_JITDUMP("[SsaRenameState::Push] BB%02u, V%02u, count = %d\n", bbNum, lclNum, ssaNum);
 

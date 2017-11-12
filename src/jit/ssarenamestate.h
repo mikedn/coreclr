@@ -42,6 +42,8 @@ public:
     // stack is required i.e., for variable "uses."
     unsigned GetTopSsaNum(unsigned lclNum);
 
+    void PushInit(unsigned lclNum, unsigned ssaNum);
+
     // Requires "lclNum" to be a variable number, and requires "ssaNum" to represent
     // an SSA number, that needs to be pushed on to the stack corresponding to the lclNum.
     void Push(BasicBlock* bb, unsigned lclNum, unsigned ssaNum);
