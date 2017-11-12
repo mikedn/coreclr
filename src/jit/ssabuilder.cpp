@@ -966,22 +966,22 @@ void SsaBuilder::TreeRenameVariables(GenTree* tree, BasicBlock* block, SsaRename
                 if (!isLocal || (isAddrExposedLocal && !hasByrefHavoc))
                 {
                     // It *may* define byref memory in a non-havoc way.  Make a new SSA # -- associate with this node.
-                    unsigned count = pRenameState->AllocMemorySsaNum();
+                    unsigned ssaNum = pRenameState->AllocMemorySsaNum();
                     if (!hasByrefHavoc)
                     {
-                        pRenameState->PushMemory(ByrefExposed, block, count);
-                        m_pCompiler->GetMemorySsaMap(ByrefExposed)->Set(tree, count);
+                        pRenameState->PushMemory(ByrefExposed, block, ssaNum);
+                        m_pCompiler->GetMemorySsaMap(ByrefExposed)->Set(tree, ssaNum);
 #ifdef DEBUG
                         if (JitTls::GetCompiler()->verboseSsa)
                         {
                             printf("Node ");
                             Compiler::printTreeID(tree);
-                            printf(" (in try block) may define memory; ssa # = %d.\n", count);
+                            printf(" (in try block) may define memory; ssa # = %d.\n", ssaNum);
                         }
 #endif // DEBUG
 
                         // Now add this SSA # to all phis of the reachable catch blocks.
-                        AddMemoryDefToHandlerPhis(ByrefExposed, block, count);
+                        AddMemoryDefToHandlerPhis(ByrefExposed, block, ssaNum);
                     }
 
                     if (!isLocal)
@@ -991,8 +991,8 @@ void SsaBuilder::TreeRenameVariables(GenTree* tree, BasicBlock* block, SsaRename
                         {
                             // GcHeap and ByrefExposed share the same stacks, SsaMap, and phis
                             assert(!hasByrefHavoc);
-                            assert(pRenameState->GetTopMemorySsaNum(GcHeap) == count);
-                            assert(*m_pCompiler->GetMemorySsaMap(GcHeap)->LookupPointer(tree) == count);
+                            assert(pRenameState->GetTopMemorySsaNum(GcHeap) == ssaNum);
+                            assert(*m_pCompiler->GetMemorySsaMap(GcHeap)->LookupPointer(tree) == ssaNum);
                             assert(block->bbMemorySsaPhiFunc[GcHeap] == block->bbMemorySsaPhiFunc[ByrefExposed]);
                         }
                         else
@@ -1000,12 +1000,12 @@ void SsaBuilder::TreeRenameVariables(GenTree* tree, BasicBlock* block, SsaRename
                             if (!hasByrefHavoc)
                             {
                                 // Allocate a distinct defnum for the GC Heap
-                                count = pRenameState->AllocMemorySsaNum();
+                                ssaNum = pRenameState->AllocMemorySsaNum();
                             }
 
-                            pRenameState->PushMemory(GcHeap, block, count);
-                            m_pCompiler->GetMemorySsaMap(GcHeap)->Set(tree, count);
-                            AddMemoryDefToHandlerPhis(GcHeap, block, count);
+                            pRenameState->PushMemory(GcHeap, block, ssaNum);
+                            m_pCompiler->GetMemorySsaMap(GcHeap)->Set(tree, ssaNum);
+                            AddMemoryDefToHandlerPhis(GcHeap, block, ssaNum);
                         }
                     }
                 }
@@ -1033,9 +1033,9 @@ void SsaBuilder::TreeRenameVariables(GenTree* tree, BasicBlock* block, SsaRename
         {
             pIndirAssign->m_useSsaNum = pRenameState->GetTopSsaNum(lclNum);
         }
-        unsigned count            = pRenameState->AllocSsaNum(lclNum);
-        pIndirAssign->m_defSsaNum = count;
-        pRenameState->Push(block, lclNum, count);
+        unsigned ssaNum           = pRenameState->AllocSsaNum(lclNum);
+        pIndirAssign->m_defSsaNum = ssaNum;
+        pRenameState->Push(block, lclNum, ssaNum);
         AddDefPoint(tree, block);
     }
     else
@@ -1055,24 +1055,25 @@ void SsaBuilder::TreeRenameVariables(GenTree* tree, BasicBlock* block, SsaRename
                 // This the "x" in something like "x op= y"; it is both a use (first), then a def.
                 // The def will define a new SSA name, and record that in "x".  If we need the SSA
                 // name of the use, we record it in a map reserved for that purpose.
-                unsigned count = pRenameState->GetTopSsaNum(lclNum);
-                tree->gtLclVarCommon.SetSsaNum(count);
+                unsigned ssaNum = pRenameState->GetTopSsaNum(lclNum);
+                tree->gtLclVarCommon.SetSsaNum(ssaNum);
 #ifdef SSA_FEATURE_USEDEF
                 AddUsePoint(tree);
 #endif
             }
 
-            // Give a count and increment.
-            unsigned count = pRenameState->AllocSsaNum(lclNum);
+            // Allocate a new SSA number for this definition
+            unsigned ssaName = pRenameState->AllocSsaNum(lclNum);
+
             if (tree->gtFlags & GTF_VAR_USEASG)
             {
-                m_pCompiler->GetOpAsgnVarDefSsaNums()->Set(tree, count);
+                m_pCompiler->GetOpAsgnVarDefSsaNums()->Set(tree, ssaName);
             }
             else
             {
-                tree->gtLclVarCommon.SetSsaNum(count);
+                tree->gtLclVarCommon.SetSsaNum(ssaName);
             }
-            pRenameState->Push(block, lclNum, count);
+            pRenameState->Push(block, lclNum, ssaName);
             AddDefPoint(tree, block);
 
             // If necessary, add "lclNum/count" to the arg list of a phi def in any
@@ -1080,7 +1081,7 @@ void SsaBuilder::TreeRenameVariables(GenTree* tree, BasicBlock* block, SsaRename
             // not phi definitions.)
             if (!isPhiDefn)
             {
-                AddDefToHandlerPhis(block, lclNum, count);
+                AddDefToHandlerPhis(block, lclNum, ssaName);
             }
         }
         else if (!isPhiDefn) // Phi args already have ssa numbers.
@@ -1104,8 +1105,8 @@ void SsaBuilder::TreeRenameVariables(GenTree* tree, BasicBlock* block, SsaRename
                 }
             }
             // Give the count as top of stack.
-            unsigned count = pRenameState->GetTopSsaNum(lclNum);
-            tree->gtLclVarCommon.SetSsaNum(count);
+            unsigned ssaNum = pRenameState->GetTopSsaNum(lclNum);
+            tree->gtLclVarCommon.SetSsaNum(ssaNum);
 #ifdef SSA_FEATURE_USEDEF
             AddUsePoint(tree);
 #endif
@@ -1675,14 +1676,14 @@ void SsaBuilder::RenameVariables(BlkToBlkSetMap* domTree, SsaRenameState* pRenam
             (varDsc->lvTracked &&
              VarSetOps::IsMember(m_pCompiler, m_pCompiler->fgFirstBB->bbLiveIn, varDsc->lvVarIndex)))
         {
-            unsigned count = pRenameState->AllocSsaNum(i);
+            unsigned ssaName = pRenameState->AllocSsaNum(i);
 
             // In ValueNum we'd assume un-inited variables get FIRST_SSA_NUM.
-            assert(count == SsaConfig::FIRST_SSA_NUM);
+            assert(ssaName == SsaConfig::FIRST_SSA_NUM);
 #ifdef DEBUG
             varDsc->lvNumSsaNames++;
 #endif
-            pRenameState->PushInit(i, count);
+            pRenameState->PushInit(i, ssaName);
         }
     }
 
@@ -1743,7 +1744,7 @@ void SsaBuilder::RenameVariables(BlkToBlkSetMap* domTree, SsaRenameState* pRenam
             // been (recursively) processed, we still need to call BlockPopStacks on it.
             blocksToDo->push_back(BlockWork(block, true));
 
-            // Walk the block give counts to DEFs and give top of stack count for USEs.
+            // Walk the block give counts to DEFs and give top of stack SSA number for USEs.
             BlockRenameVariables(block, pRenameState);
 
             // Assign arguments to the phi node of successors, corresponding to the block's index.
@@ -1762,7 +1763,7 @@ void SsaBuilder::RenameVariables(BlkToBlkSetMap* domTree, SsaRenameState* pRenam
         }
         else
         {
-            // Done, pop all the stack count, if there is one for this block.
+            // Done, pop all SSA numbers, if there is one for this block.
             BlockPopStacks(block, pRenameState);
             DBG_SSA_JITDUMP("[SsaBuilder::RenameVariables] done with BB%02u\n", block->bbNum);
         }
