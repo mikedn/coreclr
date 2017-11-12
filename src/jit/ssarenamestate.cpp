@@ -2,23 +2,6 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-// ==++==
-//
-
-//
-
-//
-// ==--==
-
-/*XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
-XX                                                                           XX
-XX                                  SSA                                      XX
-XX                                                                           XX
-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
-*/
-
 #include "jitpch.h"
 #include "ssaconfig.h"
 #include "ssarenamestate.h"
@@ -146,10 +129,10 @@ void SsaRenameState::Push(BasicBlock* bb, unsigned lclNum, unsigned count)
 
     if (stack->empty() || stack->back().m_bb != bb)
     {
-        stack->push_back(SsaRenameStateForBlock(bb, count));
+        stack->push_back(BlockState(bb, count));
         // Remember that we've pushed a def for this loc (so we don't have
         // to traverse *all* the locs to do the necessary pops later).
-        definedLocs.push_back(SsaRenameStateLocDef(bb, lclNum));
+        definedLocs.push_back(LclDefState(bb, lclNum));
     }
     else
     {

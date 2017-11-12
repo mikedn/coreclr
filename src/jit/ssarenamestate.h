@@ -2,23 +2,6 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-// ==++==
-//
-
-//
-
-//
-// ==--==
-
-/*XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
-XX                                                                           XX
-XX                                  SSA                                      XX
-XX                                                                           XX
-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
-*/
-
 #pragma once
 
 #include "jitstd.h"
@@ -70,41 +53,39 @@ public:
     }
 };
 
-struct SsaRenameStateForBlock
+class SsaRenameState
 {
-    BasicBlock* m_bb;
-    unsigned    m_count;
-
-    SsaRenameStateForBlock(BasicBlock* bb, unsigned count) : m_bb(bb), m_count(count)
+    struct BlockState
     {
-    }
-    SsaRenameStateForBlock() : m_bb(nullptr), m_count(0)
+        BasicBlock* m_bb;
+        unsigned    m_count;
+
+        BlockState(BasicBlock* bb, unsigned count) : m_bb(bb), m_count(count)
+        {
+        }
+        BlockState() : m_bb(nullptr), m_count(0)
+        {
+        }
+    };
+
+    // A record indicating that local "m_loc" was defined in block "m_bb".
+    struct LclDefState
     {
-    }
-};
+        BasicBlock* m_bb;
+        unsigned    m_lclNum;
 
-// A record indicating that local "m_loc" was defined in block "m_bb".
-struct SsaRenameStateLocDef
-{
-    BasicBlock* m_bb;
-    unsigned    m_lclNum;
+        LclDefState(BasicBlock* bb, unsigned lclNum) : m_bb(bb), m_lclNum(lclNum)
+        {
+        }
+    };
 
-    SsaRenameStateLocDef(BasicBlock* bb, unsigned lclNum) : m_bb(bb), m_lclNum(lclNum)
-    {
-    }
-};
+    typedef jitstd::list<BlockState>  Stack;
+    typedef Stack**                   Stacks;
+    typedef unsigned*                 Counts;
+    typedef jitstd::list<LclDefState> DefStack;
 
-struct SsaRenameState
-{
-    typedef jitstd::list<SsaRenameStateForBlock> Stack;
-    typedef Stack**                              Stacks;
-    typedef unsigned*                            Counts;
-    typedef jitstd::list<SsaRenameStateLocDef>   DefStack;
-
+public:
     SsaRenameState(const jitstd::allocator<int>& allocator, unsigned lvaCount, bool byrefStatesMatchGcHeapStates);
-
-    void EnsureCounts();
-    void EnsureStacks();
 
     // Requires "lclNum" to be a variable number for which a new count corresponding to a
     // definition is desired. The method post increments the counter for the "lclNum."
@@ -149,7 +130,7 @@ struct SsaRenameState
             // Share rename stacks in this configuration.
             memoryKind = ByrefExposed;
         }
-        memoryStack[memoryKind].push_back(SsaRenameStateForBlock(bb, count));
+        memoryStack[memoryKind].push_back(BlockState(bb, count));
     }
 
     void PopBlockMemoryStack(MemoryKind memoryKind, BasicBlock* bb);
@@ -159,12 +140,15 @@ struct SsaRenameState
         return memoryCount;
     }
 
+private:
 #ifdef DEBUG
     // Debug interface
     void DumpStacks();
 #endif
 
-private:
+    void EnsureCounts();
+    void EnsureStacks();
+
     // Map of lclNum -> count.
     Counts counts;
 

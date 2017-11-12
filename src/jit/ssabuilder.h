@@ -10,7 +10,7 @@
 
 #include "compiler.h"
 
-struct SsaRenameState;
+class SsaRenameState;
 
 typedef int LclVarNum;
 
