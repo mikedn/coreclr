@@ -14,7 +14,7 @@
 SsaRenameState::SsaRenameState(const jitstd::allocator<int>& alloc,
                                unsigned                      lvaCount,
                                bool                          byrefStatesMatchGcHeapStates)
-    : counts(nullptr)
+    : m_lclDefCounts(nullptr)
     , stacks(nullptr)
     , definedLocs(alloc)
     , memoryStack(alloc)
@@ -32,12 +32,12 @@ SsaRenameState::SsaRenameState(const jitstd::allocator<int>& alloc,
  */
 void SsaRenameState::EnsureCounts()
 {
-    if (counts == nullptr)
+    if (m_lclDefCounts == nullptr)
     {
-        counts = jitstd::utility::allocate<unsigned>(m_alloc, lvaCount);
+        m_lclDefCounts = jitstd::utility::allocate<unsigned>(m_alloc, lvaCount);
         for (unsigned i = 0; i < lvaCount; ++i)
         {
-            counts[i] = SsaConfig::FIRST_SSA_NUM;
+            m_lclDefCounts[i] = SsaConfig::FIRST_SSA_NUM;
         }
     }
 }
@@ -69,11 +69,11 @@ void SsaRenameState::EnsureStacks()
  * @return the variable name for the current definition.
  *
  */
-unsigned SsaRenameState::CountForDef(unsigned lclNum)
+unsigned SsaRenameState::AllocSsaNum(unsigned lclNum)
 {
     EnsureCounts();
-    unsigned count = counts[lclNum];
-    counts[lclNum]++;
+    unsigned count = m_lclDefCounts[lclNum];
+    m_lclDefCounts[lclNum]++;
     DBG_SSA_JITDUMP("Incrementing counter = %d by 1 for V%02u.\n", count, lclNum);
     return count;
 }
@@ -90,7 +90,7 @@ unsigned SsaRenameState::CountForDef(unsigned lclNum)
  *          all uses until a definition.
  *
  */
-unsigned SsaRenameState::CountForUse(unsigned lclNum)
+unsigned SsaRenameState::GetTopSsaNum(unsigned lclNum)
 {
     EnsureStacks();
     DBG_SSA_JITDUMP("[SsaRenameState::CountForUse] V%02u\n", lclNum);
@@ -100,7 +100,7 @@ unsigned SsaRenameState::CountForUse(unsigned lclNum)
     {
         return SsaConfig::UNINIT_SSA_NUM;
     }
-    return stack->back().m_count;
+    return stack->back().m_ssaNum;
 }
 
 /**
@@ -112,14 +112,14 @@ unsigned SsaRenameState::CountForUse(unsigned lclNum)
  * @remarks Usually called when renaming a "def."
  *          Create stack lazily when needed for the first time.
  */
-void SsaRenameState::Push(BasicBlock* bb, unsigned lclNum, unsigned count)
+void SsaRenameState::Push(BasicBlock* bb, unsigned lclNum, unsigned ssaNum)
 {
     EnsureStacks();
 
     // We'll use BB00 here to indicate the "block before any real blocks..."
     unsigned bbNum = (bb == nullptr) ? 0 : bb->bbNum;
 
-    DBG_SSA_JITDUMP("[SsaRenameState::Push] BB%02u, V%02u, count = %d\n", bbNum, lclNum, count);
+    DBG_SSA_JITDUMP("[SsaRenameState::Push] BB%02u, V%02u, count = %d\n", bbNum, lclNum, ssaNum);
 
     Stack* stack = stacks[lclNum];
 
@@ -131,14 +131,14 @@ void SsaRenameState::Push(BasicBlock* bb, unsigned lclNum, unsigned count)
 
     if (stack->empty() || (stack->back().m_bbNum != bbNum))
     {
-        stack->push_back(BlockState(bbNum, count));
+        stack->push_back(BlockState(bbNum, ssaNum));
         // Remember that we've pushed a def for this loc (so we don't have
         // to traverse *all* the locs to do the necessary pops later).
         definedLocs.push_back(LclDefState(bbNum, lclNum));
     }
     else
     {
-        stack->back().m_count = count;
+        stack->back().m_ssaNum = ssaNum;
     }
 
 #ifdef DEBUG
@@ -147,7 +147,7 @@ void SsaRenameState::Push(BasicBlock* bb, unsigned lclNum, unsigned count)
         printf("\tContents of the stack: [");
         for (Stack::iterator iter2 = stack->begin(); iter2 != stack->end(); iter2++)
         {
-            printf("<BB%02u, %d>", iter2->m_bbNum, iter2->m_count);
+            printf("<BB%02u, %d>", iter2->m_bbNum, iter2->m_ssaNum);
         }
         printf("]\n");
 
@@ -225,7 +225,7 @@ void SsaRenameState::DumpStacks()
                     {
                         printf(", ");
                     }
-                    printf("<BB%02u, %2d>", iter2->m_bbNum, iter2->m_count);
+                    printf("<BB%02u, %2d>", iter2->m_bbNum, iter2->m_ssaNum);
                 }
             }
             printf("\n");

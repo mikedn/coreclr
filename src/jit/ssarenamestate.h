@@ -58,13 +58,13 @@ class SsaRenameState
     struct BlockState
     {
         unsigned m_bbNum;
-        unsigned m_count;
+        unsigned m_ssaNum;
 
-        BlockState(unsigned bbNum, unsigned count) : m_bbNum(bbNum), m_count(count)
+        BlockState(unsigned bbNum, unsigned ssaNum) : m_bbNum(bbNum), m_ssaNum(ssaNum)
         {
         }
 
-        BlockState() : m_bbNum(0), m_count(0)
+        BlockState() : m_bbNum(0), m_ssaNum(0)
         {
         }
     };
@@ -82,29 +82,28 @@ class SsaRenameState
 
     typedef jitstd::list<BlockState>  Stack;
     typedef Stack**                   Stacks;
-    typedef unsigned*                 Counts;
     typedef jitstd::list<LclDefState> DefStack;
 
 public:
     SsaRenameState(const jitstd::allocator<int>& allocator, unsigned lvaCount, bool byrefStatesMatchGcHeapStates);
 
-    // Requires "lclNum" to be a variable number for which a new count corresponding to a
-    // definition is desired. The method post increments the counter for the "lclNum."
-    unsigned CountForDef(unsigned lclNum);
+    // Requires "lclNum" to be a variable number for which a SSA number corresponding to a
+    // new definition is desired. The method post increments the counter for the "lclNum."
+    unsigned AllocSsaNum(unsigned lclNum);
 
-    // Requires "lclNum" to be a variable number for which an ssa number at the top of the
+    // Requires "lclNum" to be a variable number for which an SSA number at the top of the
     // stack is required i.e., for variable "uses."
-    unsigned CountForUse(unsigned lclNum);
+    unsigned GetTopSsaNum(unsigned lclNum);
 
-    // Requires "lclNum" to be a variable number, and requires "count" to represent
-    // an ssa number, that needs to be pushed on to the stack corresponding to the lclNum.
-    void Push(BasicBlock* bb, unsigned lclNum, unsigned count);
+    // Requires "lclNum" to be a variable number, and requires "ssaNum" to represent
+    // an SSA number, that needs to be pushed on to the stack corresponding to the lclNum.
+    void Push(BasicBlock* bb, unsigned lclNum, unsigned ssaNum);
 
     // Pop all stacks that have an entry for "bb" on top.
     void PopBlockStacks(BasicBlock* bb);
 
     // Similar functions for the special implicit memory variable.
-    unsigned CountForMemoryDef()
+    unsigned AllocMemorySsaNum()
     {
         if (memoryCount == 0)
         {
@@ -114,24 +113,24 @@ public:
         memoryCount++;
         return res;
     }
-    unsigned CountForMemoryUse(MemoryKind memoryKind)
+    unsigned GetTopMemorySsaNum(MemoryKind memoryKind)
     {
         if ((memoryKind == GcHeap) && byrefStatesMatchGcHeapStates)
         {
             // Share rename stacks in this configuration.
             memoryKind = ByrefExposed;
         }
-        return memoryStack[memoryKind].back().m_count;
+        return memoryStack[memoryKind].back().m_ssaNum;
     }
 
-    void PushMemory(MemoryKind memoryKind, BasicBlock* bb, unsigned count)
+    void PushMemory(MemoryKind memoryKind, BasicBlock* bb, unsigned ssaNum)
     {
         if ((memoryKind == GcHeap) && byrefStatesMatchGcHeapStates)
         {
             // Share rename stacks in this configuration.
             memoryKind = ByrefExposed;
         }
-        memoryStack[memoryKind].push_back(BlockState(bb->bbNum, count));
+        memoryStack[memoryKind].push_back(BlockState(bb->bbNum, ssaNum));
     }
 
     void PopBlockMemoryStack(MemoryKind memoryKind, BasicBlock* bb);
@@ -150,8 +149,8 @@ private:
     void EnsureCounts();
     void EnsureStacks();
 
-    // Map of lclNum -> count.
-    Counts counts;
+    // Map of lclNum -> definition count.
+    unsigned* m_lclDefCounts;
 
     // Map of lclNum -> SsaRenameStateForBlock.
     Stacks stacks;
