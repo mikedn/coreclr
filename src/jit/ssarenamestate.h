@@ -10,23 +10,14 @@ class SsaRenameState
 {
     struct BlockState
     {
-        BlockState* m_prev;
+        BlockState* m_list;
+        BlockState* m_stack;
         unsigned    m_bbNum;
+        unsigned    m_lclNum;
         unsigned    m_ssaNum;
 
-        BlockState(BlockState* prev, unsigned bbNum, unsigned ssaNum) : m_prev(prev), m_bbNum(bbNum), m_ssaNum(ssaNum)
-        {
-        }
-    };
-
-    // A record indicating that local "m_lclNum" was defined in block "m_bbNum".
-    struct LclDefState
-    {
-        LclDefState* m_prev;
-        unsigned     m_bbNum;
-        unsigned     m_lclNum;
-
-        LclDefState(LclDefState* prev, unsigned bbNum, unsigned lclNum) : m_prev(prev), m_bbNum(bbNum), m_lclNum(lclNum)
+        BlockState(BlockState* list, BlockState* stack, unsigned bbNum, unsigned lclNum, unsigned ssaNum)
+            : m_list(list), m_stack(stack), m_bbNum(bbNum), m_lclNum(lclNum), m_ssaNum(ssaNum)
         {
         }
     };
@@ -79,7 +70,7 @@ public:
             // Share rename stacks in this configuration.
             memoryKind = ByrefExposed;
         }
-        m_memoryStack[memoryKind] = new (m_alloc) BlockState(m_memoryStack[memoryKind], bb->bbNum, ssaNum);
+        m_memoryStack[memoryKind] = new (m_alloc) BlockState(nullptr, m_memoryStack[memoryKind], bb->bbNum, 0, ssaNum);
     }
 
     void PopBlockMemoryStack(MemoryKind memoryKind, BasicBlock* bb);
@@ -90,39 +81,27 @@ public:
     }
 
 private:
-    template <typename T>
-    class ObjectPool
+    BlockState* AllocBlockState(BlockState* list, BlockState* stack, unsigned bbNum, unsigned lclNum, unsigned ssaNum)
     {
-        T* m_freeList;
+        BlockState* obj = m_freeList;
 
-    public:
-        ObjectPool() : m_freeList(nullptr)
+        if (obj == nullptr)
         {
+            obj = static_cast<BlockState*>(m_alloc->Alloc(sizeof(BlockState)));
+        }
+        else
+        {
+            m_freeList = obj->m_list;
         }
 
-        template <class... Args>
-        T* Alloc(CompAllocator* alloc, Args&&... args)
-        {
-            T* obj = m_freeList;
+        return new (obj, jitstd::placement_t()) BlockState(list, stack, bbNum, lclNum, ssaNum);
+    }
 
-            if (obj == nullptr)
-            {
-                obj = static_cast<T*>(alloc->Alloc(sizeof(T)));
-            }
-            else
-            {
-                m_freeList = obj->m_prev;
-            }
-
-            return new (obj, jitstd::placement_t()) T(jitstd::forward<Args>(args)...);
-        }
-
-        void Free(T* obj)
-        {
-            obj->m_prev = m_freeList;
-            m_freeList  = obj;
-        }
-    };
+    void FreeBlockStateList(BlockState* first, BlockState* last)
+    {
+        last->m_list = m_freeList;
+        m_freeList   = first;
+    }
 
 #ifdef DEBUG
     // Debug interface
@@ -137,9 +116,8 @@ private:
 
     // Map of lclNum -> BlockState* (a stack of block states).
     BlockState** m_stacks;
-
-    // This list represents the set of locals defined in the current block.
-    LclDefState* m_definedLocs;
+    BlockState*  m_blockStack;
+    BlockState*  m_freeList;
 
     // Same state for the special implicit memory variables.
     BlockState* m_memoryStack[MemoryKindCount];
@@ -150,9 +128,6 @@ private:
 
     // Allocator to allocate stacks.
     CompAllocator* m_alloc;
-
-    ObjectPool<BlockState>  m_blockStatePool;
-    ObjectPool<LclDefState> m_lclDefStatePool;
 
     // Indicates whether GcHeap and ByrefExposed use the same state.
     bool byrefStatesMatchGcHeapStates;

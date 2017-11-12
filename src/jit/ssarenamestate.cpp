@@ -14,13 +14,12 @@
 SsaRenameState::SsaRenameState(CompAllocator* alloc, unsigned lvaCount, bool byrefStatesMatchGcHeapStates)
     : m_lclDefCounts(nullptr)
     , m_stacks(nullptr)
-    , m_definedLocs(nullptr)
+    , m_blockStack(nullptr)
+    , m_freeList(nullptr)
     , m_memoryStack()
     , m_memoryCount(0)
     , lvaCount(lvaCount)
     , m_alloc(alloc)
-    , m_blockStatePool()
-    , m_lclDefStatePool()
     , byrefStatesMatchGcHeapStates(byrefStatesMatchGcHeapStates)
 {
 }
@@ -106,9 +105,10 @@ void SsaRenameState::PushInit(unsigned lclNum, unsigned ssaNum)
     // We'll use BB00 here to indicate the "block before any real blocks..."
     DBG_SSA_JITDUMP("[SsaRenameState::PushInit] BB%02u, V%02u, count = %d\n", 0, lclNum, ssaNum);
 
-    BlockState* state = m_stacks[lclNum];
-    assert(state == nullptr);
-    m_stacks[lclNum] = m_blockStatePool.Alloc(m_alloc, state, 0, ssaNum);
+    assert(m_stacks[lclNum] == nullptr);
+
+    // The initial state does not need to be popped so it is not in the block stack
+    m_stacks[lclNum] = new (m_alloc) BlockState(nullptr, nullptr, 0, lclNum, ssaNum);
 }
 
 /**
@@ -132,10 +132,9 @@ void SsaRenameState::Push(BasicBlock* bb, unsigned lclNum, unsigned ssaNum)
 
     if ((state == nullptr) || (state->m_bbNum != bbNum))
     {
-        m_stacks[lclNum] = m_blockStatePool.Alloc(m_alloc, state, bbNum, ssaNum);
-        // Remember that we've pushed a def for this loc (so we don't have
-        // to traverse *all* the locs to do the necessary pops later).
-        m_definedLocs = m_lclDefStatePool.Alloc(m_alloc, m_definedLocs, bbNum, lclNum);
+        state            = AllocBlockState(m_blockStack, state, bbNum, lclNum, ssaNum);
+        m_stacks[lclNum] = state;
+        m_blockStack     = state;
     }
     else
     {
@@ -146,7 +145,7 @@ void SsaRenameState::Push(BasicBlock* bb, unsigned lclNum, unsigned ssaNum)
     if (JitTls::GetCompiler()->verboseSsa)
     {
         printf("\tContents of the stack: [");
-        for (BlockState* state = m_stacks[lclNum]; state != nullptr; state = state->m_prev)
+        for (BlockState* state = m_stacks[lclNum]; state != nullptr; state = state->m_stack)
         {
             printf("<BB%02u, %d>", state->m_bbNum, state->m_ssaNum);
         }
@@ -162,24 +161,26 @@ void SsaRenameState::PopBlockStacks(BasicBlock* block)
     unsigned bbNum = block->bbNum;
 
     DBG_SSA_JITDUMP("[SsaRenameState::PopBlockStacks] BB%02u\n", bbNum);
+
     // Iterate over the stacks for all the variables, popping those that have an entry
     // for "block" on top.
-    while ((m_definedLocs != nullptr) && (m_definedLocs->m_bbNum == bbNum))
+
+    BlockState* firstBlockState = m_blockStack;
+    BlockState* lastBlockState  = nullptr;
+
+    for (BlockState* state = firstBlockState; (state != nullptr) && (state->m_bbNum == bbNum); state = state->m_list)
     {
-        LclDefState* lclDefState = m_definedLocs;
-        unsigned     lclNum      = lclDefState->m_lclNum;
-
-        assert(m_stacks != nullptr); // Cannot be empty because definedLocs is not empty.
-        BlockState* state = m_stacks[lclNum];
-        assert(state != nullptr);
-        assert(state->m_bbNum == bbNum);
-
-        m_stacks[lclNum] = state->m_prev;
-        m_definedLocs    = lclDefState->m_prev;
-
-        m_blockStatePool.Free(state);
-        m_lclDefStatePool.Free(lclDefState);
+        assert(m_stacks[state->m_lclNum] == state);
+        m_stacks[state->m_lclNum] = state->m_stack;
+        lastBlockState            = state;
     }
+
+    if (lastBlockState != nullptr)
+    {
+        m_blockStack = lastBlockState->m_list;
+        FreeBlockStateList(firstBlockState, lastBlockState);
+    }
+
 #ifdef DEBUG
     if (m_stacks != nullptr)
     {
@@ -202,7 +203,7 @@ void SsaRenameState::PopBlockMemoryStack(MemoryKind memoryKind, BasicBlock* bloc
     BlockState* state = m_memoryStack[memoryKind];
     while ((state != nullptr) && (state->m_bbNum == block->bbNum))
     {
-        state = state->m_prev;
+        state = state->m_stack;
     }
     m_memoryStack[memoryKind] = state;
 }
@@ -224,9 +225,9 @@ void SsaRenameState::DumpStacks()
         for (unsigned i = 0; i < lvaCount; ++i)
         {
             printf("V%02u:\t", i);
-            for (BlockState* state = m_stacks[i]; state != nullptr; state = state->m_prev)
+            for (BlockState* state = m_stacks[i]; state != nullptr; state = state->m_stack)
             {
-                printf("<BB%02u, %2d>%s", state->m_bbNum, state->m_ssaNum, (state->m_prev != nullptr) ? "," : "");
+                printf("<BB%02u, %2d>%s", state->m_bbNum, state->m_ssaNum, (state->m_stack != nullptr) ? "," : "");
             }
             printf("\n");
         }
