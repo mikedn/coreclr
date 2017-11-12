@@ -19,6 +19,8 @@ SsaRenameState::SsaRenameState(CompAllocator* alloc, unsigned lvaCount, bool byr
     , m_memoryCount(0)
     , lvaCount(lvaCount)
     , m_alloc(alloc)
+    , m_blockStatePool()
+    , m_lclDefStatePool()
     , byrefStatesMatchGcHeapStates(byrefStatesMatchGcHeapStates)
 {
 }
@@ -106,7 +108,7 @@ void SsaRenameState::PushInit(unsigned lclNum, unsigned ssaNum)
 
     BlockState* state = m_stacks[lclNum];
     assert(state == nullptr);
-    m_stacks[lclNum] = new (m_alloc) BlockState(state, 0, ssaNum);
+    m_stacks[lclNum] = m_blockStatePool.Alloc(m_alloc, state, 0, ssaNum);
 }
 
 /**
@@ -130,10 +132,10 @@ void SsaRenameState::Push(BasicBlock* bb, unsigned lclNum, unsigned ssaNum)
 
     if ((state == nullptr) || (state->m_bbNum != bbNum))
     {
-        m_stacks[lclNum] = new (m_alloc) BlockState(state, bbNum, ssaNum);
+        m_stacks[lclNum] = m_blockStatePool.Alloc(m_alloc, state, bbNum, ssaNum);
         // Remember that we've pushed a def for this loc (so we don't have
         // to traverse *all* the locs to do the necessary pops later).
-        m_definedLocs = new (m_alloc) LclDefState(m_definedLocs, bbNum, lclNum);
+        m_definedLocs = m_lclDefStatePool.Alloc(m_alloc, m_definedLocs, bbNum, lclNum);
     }
     else
     {
@@ -164,13 +166,19 @@ void SsaRenameState::PopBlockStacks(BasicBlock* block)
     // for "block" on top.
     while ((m_definedLocs != nullptr) && (m_definedLocs->m_bbNum == bbNum))
     {
-        unsigned lclNum = m_definedLocs->m_lclNum;
+        LclDefState* lclDefState = m_definedLocs;
+        unsigned     lclNum      = lclDefState->m_lclNum;
+
         assert(m_stacks != nullptr); // Cannot be empty because definedLocs is not empty.
         BlockState* state = m_stacks[lclNum];
         assert(state != nullptr);
         assert(state->m_bbNum == bbNum);
+
         m_stacks[lclNum] = state->m_prev;
-        m_definedLocs    = m_definedLocs->m_prev;
+        m_definedLocs    = lclDefState->m_prev;
+
+        m_blockStatePool.Free(state);
+        m_lclDefStatePool.Free(lclDefState);
     }
 #ifdef DEBUG
     if (m_stacks != nullptr)

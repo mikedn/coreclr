@@ -90,6 +90,40 @@ public:
     }
 
 private:
+    template <typename T>
+    class ObjectPool
+    {
+        T* m_freeList;
+
+    public:
+        ObjectPool() : m_freeList(nullptr)
+        {
+        }
+
+        template <class... Args>
+        T* Alloc(CompAllocator* alloc, Args&&... args)
+        {
+            T* obj = m_freeList;
+
+            if (obj == nullptr)
+            {
+                obj = static_cast<T*>(alloc->Alloc(sizeof(T)));
+            }
+            else
+            {
+                m_freeList = obj->m_prev;
+            }
+
+            return new (obj, jitstd::placement_t()) T(jitstd::forward<Args>(args)...);
+        }
+
+        void Free(T* obj)
+        {
+            obj->m_prev = m_freeList;
+            m_freeList  = obj;
+        }
+    };
+
 #ifdef DEBUG
     // Debug interface
     void DumpStacks();
@@ -116,6 +150,9 @@ private:
 
     // Allocator to allocate stacks.
     CompAllocator* m_alloc;
+
+    ObjectPool<BlockState>  m_blockStatePool;
+    ObjectPool<LclDefState> m_lclDefStatePool;
 
     // Indicates whether GcHeap and ByrefExposed use the same state.
     bool byrefStatesMatchGcHeapStates;
