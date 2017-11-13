@@ -1968,9 +1968,7 @@ void Compiler::compInit(ArenaAllocator* pAlloc, InlineInfo* inlineInfo)
         impSpillCliquePredMembers = JitExpandArray<BYTE>(getAllocator());
         impSpillCliqueSuccMembers = JitExpandArray<BYTE>(getAllocator());
 
-        memset(&lvMemoryPerSsaData, 0, sizeof(PerSsaArray));
-        lvMemoryPerSsaData.Init(getAllocator());
-        lvMemoryNumSsaNames = 0;
+        lvMemoryPerSsaData = PerSsaArray();
 
         //
         // Initialize all the per-method statistics gathering data structures.

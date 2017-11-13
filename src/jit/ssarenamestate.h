@@ -25,10 +25,6 @@ class SsaRenameState
 public:
     SsaRenameState(CompAllocator* alloc, unsigned lvaCount, bool byrefStatesMatchGcHeapStates);
 
-    // Requires "lclNum" to be a variable number for which a SSA number corresponding to a
-    // new definition is desired. The method post increments the counter for the "lclNum."
-    unsigned AllocSsaNum(unsigned lclNum);
-
     // Requires "lclNum" to be a variable number for which an SSA number at the top of the
     // stack is required i.e., for variable "uses."
     unsigned GetTopSsaNum(unsigned lclNum);
@@ -42,17 +38,6 @@ public:
     // Pop all stacks that have an entry for "bb" on top.
     void PopBlockStacks(BasicBlock* bb);
 
-    // Similar functions for the special implicit memory variable.
-    unsigned AllocMemorySsaNum()
-    {
-        if (m_memoryCount == 0)
-        {
-            m_memoryCount = SsaConfig::FIRST_SSA_NUM;
-        }
-        unsigned res = m_memoryCount;
-        m_memoryCount++;
-        return res;
-    }
     unsigned GetTopMemorySsaNum(MemoryKind memoryKind)
     {
         if ((memoryKind == GcHeap) && byrefStatesMatchGcHeapStates)
@@ -74,11 +59,6 @@ public:
     }
 
     void PopBlockMemoryStack(MemoryKind memoryKind, BasicBlock* bb);
-
-    unsigned MemoryCount()
-    {
-        return m_memoryCount;
-    }
 
 private:
     BlockState* AllocBlockState(BlockState* list, BlockState* stack, unsigned bbNum, unsigned lclNum, unsigned ssaNum)
@@ -108,11 +88,7 @@ private:
     void DumpStacks();
 #endif
 
-    void EnsureCounts();
     void EnsureStacks();
-
-    // Map of lclNum -> definition count.
-    unsigned* m_lclDefCounts;
 
     // Map of lclNum -> BlockState* (a stack of block states).
     BlockState** m_stacks;
@@ -121,7 +97,6 @@ private:
 
     // Same state for the special implicit memory variables.
     BlockState* m_memoryStack[MemoryKindCount];
-    unsigned    m_memoryCount;
 
     // Number of stacks/counts to allocate.
     unsigned lvaCount;

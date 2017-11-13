@@ -197,7 +197,79 @@ public:
     }
 };
 
-typedef JitExpandArray<LclSsaVarDsc> PerSsaArray;
+class PerSsaArray
+{
+    LclSsaVarDsc* m_array;
+    unsigned      m_arraySize;
+    unsigned      m_count;
+
+    void ReallocArray(CompAllocator* alloc)
+    {
+        unsigned oldSize = m_arraySize;
+        unsigned newSize = max(2, oldSize * 2);
+
+        LclSsaVarDsc* newArray = static_cast<LclSsaVarDsc*>(alloc->ArrayAlloc(newSize, sizeof(LclSsaVarDsc)));
+
+        for (unsigned i = 0; i < oldSize; i++)
+        {
+            newArray[i] = m_array[i];
+        }
+
+        m_array     = newArray;
+        m_arraySize = newSize;
+
+        if (m_count == 0)
+        {
+            assert(m_arraySize == 2);
+
+            m_array[0] = LclSsaVarDsc();
+            m_count++;
+        }
+    }
+
+public:
+    PerSsaArray() : m_array(nullptr), m_arraySize(0), m_count(0)
+    {
+    }
+
+    void Reset()
+    {
+        m_count = 0;
+    }
+
+    unsigned AllocSsaNum(CompAllocator* alloc)
+    {
+        if (m_count == m_arraySize)
+        {
+            ReallocArray(alloc);
+        }
+
+        unsigned ssaNum    = m_count + GetMinSsaNum();
+        m_array[m_count++] = LclSsaVarDsc();
+        return ssaNum;
+    }
+
+    unsigned GetMinSsaNum()
+    {
+        return SsaConfig::UNINIT_SSA_NUM;
+    }
+
+    unsigned GetMaxSsaNum()
+    {
+        return m_count;
+    }
+
+    static_assert_no_msg(SsaConfig::RESERVED_SSA_NUM == 0);
+    static_assert_no_msg(SsaConfig::UNINIT_SSA_NUM == 1);
+
+    LclSsaVarDsc* GetSsaDef(unsigned ssaNum)
+    {
+        assert(ssaNum > SsaConfig::RESERVED_SSA_NUM);
+        unsigned index = ssaNum - GetMinSsaNum();
+        assert(index < m_count);
+        return &m_array[index];
+    }
+};
 
 class LclVarDsc
 {
@@ -784,21 +856,12 @@ public:
 
     PerSsaArray lvPerSsaData;
 
-#ifdef DEBUG
-    // Keep track of the # of SsaNames, for a bounds check.
-    unsigned lvNumSsaNames;
-#endif
-
     // Returns the address of the per-Ssa data for the given ssaNum (which is required
     // not to be the SsaConfig::RESERVED_SSA_NUM, which indicates that the variable is
     // not an SSA variable).
     LclSsaVarDsc* GetPerSsaData(unsigned ssaNum)
     {
-        assert(ssaNum != SsaConfig::RESERVED_SSA_NUM);
-        assert(SsaConfig::RESERVED_SSA_NUM == 0);
-        unsigned zeroBased = ssaNum - SsaConfig::UNINIT_SSA_NUM;
-        assert(zeroBased < lvNumSsaNames);
-        return &lvPerSsaData.GetRef(zeroBased);
+        return lvPerSsaData.GetSsaDef(ssaNum);
     }
 
 #ifdef DEBUG
@@ -2858,7 +2921,6 @@ protected:
 
     // Keeps the mapping from SSA #'s to VN's for the implicit memory variables.
     PerSsaArray lvMemoryPerSsaData;
-    unsigned    lvMemoryNumSsaNames;
 
 public:
     // Returns the address of the per-Ssa data for memory at the given ssaNum (which is required
@@ -2866,11 +2928,7 @@ public:
     // not an SSA variable).
     LclSsaVarDsc* GetMemoryPerSsaData(unsigned ssaNum)
     {
-        assert(ssaNum != SsaConfig::RESERVED_SSA_NUM);
-        assert(SsaConfig::RESERVED_SSA_NUM == 0);
-        ssaNum--;
-        assert(ssaNum < lvMemoryNumSsaNames);
-        return &lvMemoryPerSsaData.GetRef(ssaNum);
+        return lvMemoryPerSsaData.GetSsaDef(ssaNum);
     }
 
     /*
@@ -9579,7 +9637,7 @@ inline LclVarDsc::LclVarDsc(Compiler* comp)
     lvRefBlks(BlockSetOps::UninitVal())
     ,
 #endif // ASSERTION_PROP
-    lvPerSsaData(comp->getAllocator())
+    lvPerSsaData()
 {
 }
 

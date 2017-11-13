@@ -12,33 +12,14 @@
  * @params alloc The allocator class used to allocate jitstd data.
  */
 SsaRenameState::SsaRenameState(CompAllocator* alloc, unsigned lvaCount, bool byrefStatesMatchGcHeapStates)
-    : m_lclDefCounts(nullptr)
-    , m_stacks(nullptr)
+    : m_stacks(nullptr)
     , m_blockStack(nullptr)
     , m_freeList(nullptr)
     , m_memoryStack()
-    , m_memoryCount(0)
     , lvaCount(lvaCount)
     , m_alloc(alloc)
     , byrefStatesMatchGcHeapStates(byrefStatesMatchGcHeapStates)
 {
-}
-
-/**
- * Allocates memory to hold SSA variable def counts,
- * if not allocated already.
- *
- */
-void SsaRenameState::EnsureCounts()
-{
-    if (m_lclDefCounts == nullptr)
-    {
-        m_lclDefCounts = new (m_alloc) unsigned[lvaCount];
-        for (unsigned i = 0; i < lvaCount; ++i)
-        {
-            m_lclDefCounts[i] = SsaConfig::FIRST_SSA_NUM;
-        }
-    }
 }
 
 /**
@@ -52,25 +33,6 @@ void SsaRenameState::EnsureStacks()
     {
         m_stacks = new (m_alloc) BlockState*[lvaCount]();
     }
-}
-
-/**
- * Returns a SSA count number for a local variable and does a post increment.
- *
- * If there is no counter for the local yet, initializes it with the default value
- * else, returns the count with a post increment, so the next def gets a new count.
- *
- * @params lclNum The local variable def for which a count has to be returned.
- * @return the variable name for the current definition.
- *
- */
-unsigned SsaRenameState::AllocSsaNum(unsigned lclNum)
-{
-    EnsureCounts();
-    unsigned count = m_lclDefCounts[lclNum];
-    m_lclDefCounts[lclNum]++;
-    DBG_SSA_JITDUMP("Incrementing counter = %d by 1 for V%02u.\n", count, lclNum);
-    return count;
 }
 
 /**

@@ -893,10 +893,7 @@ void SsaBuilder::AddDefPoint(GenTree* tree, BasicBlock* blk)
         lclNum    = pIndirAnnot->m_lclNum;
         defSsaNum = pIndirAnnot->m_defSsaNum;
     }
-#ifdef DEBUG
-    // Record that there's a new SSA def.
-    m_pCompiler->lvaTable[lclNum].lvNumSsaNames++;
-#endif
+
     // Record where the defn happens.
     LclSsaVarDsc* ssaDef    = m_pCompiler->lvaTable[lclNum].GetPerSsaData(defSsaNum);
     ssaDef->m_defLoc.m_blk  = blk;
@@ -966,7 +963,7 @@ void SsaBuilder::TreeRenameVariables(GenTree* tree, BasicBlock* block, SsaRename
                 if (!isLocal || (isAddrExposedLocal && !hasByrefHavoc))
                 {
                     // It *may* define byref memory in a non-havoc way.  Make a new SSA # -- associate with this node.
-                    unsigned ssaNum = pRenameState->AllocMemorySsaNum();
+                    unsigned ssaNum = m_pCompiler->lvMemoryPerSsaData.AllocSsaNum(&m_allocator);
                     if (!hasByrefHavoc)
                     {
                         pRenameState->PushMemory(ByrefExposed, block, ssaNum);
@@ -1000,7 +997,7 @@ void SsaBuilder::TreeRenameVariables(GenTree* tree, BasicBlock* block, SsaRename
                             if (!hasByrefHavoc)
                             {
                                 // Allocate a distinct defnum for the GC Heap
-                                ssaNum = pRenameState->AllocMemorySsaNum();
+                                ssaNum = m_pCompiler->lvMemoryPerSsaData.AllocSsaNum(&m_allocator);
                             }
 
                             pRenameState->PushMemory(GcHeap, block, ssaNum);
@@ -1033,7 +1030,7 @@ void SsaBuilder::TreeRenameVariables(GenTree* tree, BasicBlock* block, SsaRename
         {
             pIndirAssign->m_useSsaNum = pRenameState->GetTopSsaNum(lclNum);
         }
-        unsigned ssaNum           = pRenameState->AllocSsaNum(lclNum);
+        unsigned ssaNum           = m_pCompiler->lvaTable[lclNum].lvPerSsaData.AllocSsaNum(&m_allocator);
         pIndirAssign->m_defSsaNum = ssaNum;
         pRenameState->Push(block, lclNum, ssaNum);
         AddDefPoint(tree, block);
@@ -1063,7 +1060,7 @@ void SsaBuilder::TreeRenameVariables(GenTree* tree, BasicBlock* block, SsaRename
             }
 
             // Allocate a new SSA number for this definition
-            unsigned ssaName = pRenameState->AllocSsaNum(lclNum);
+            unsigned ssaName = m_pCompiler->lvaTable[lclNum].lvPerSsaData.AllocSsaNum(&m_allocator);
 
             if (tree->gtFlags & GTF_VAR_USEASG)
             {
@@ -1298,7 +1295,7 @@ void SsaBuilder::BlockRenameVariables(BasicBlock* block, SsaRenameState* pRename
             // Is there an Phi definition for memoryKind at the start of this block?
             if (block->bbMemorySsaPhiFunc[memoryKind] != nullptr)
             {
-                unsigned count = pRenameState->AllocMemorySsaNum();
+                unsigned count = m_pCompiler->lvMemoryPerSsaData.AllocSsaNum(&m_allocator);
                 pRenameState->PushMemory(memoryKind, block, count);
 
                 DBG_SSA_JITDUMP("Ssa # for %s phi on entry to BB%02u is %d.\n", memoryKindNames[memoryKind],
@@ -1348,7 +1345,7 @@ void SsaBuilder::BlockRenameVariables(BasicBlock* block, SsaRenameState* pRename
         {
             if ((block->bbMemoryDef & memorySet) != 0)
             {
-                unsigned count = pRenameState->AllocMemorySsaNum();
+                unsigned count = m_pCompiler->lvMemoryPerSsaData.AllocSsaNum(&m_allocator);
                 pRenameState->PushMemory(memoryKind, block, count);
                 AddMemoryDefToHandlerPhis(memoryKind, block, count);
             }
@@ -1668,28 +1665,20 @@ void SsaBuilder::RenameVariables(BlkToBlkSetMap* domTree, SsaRenameState* pRenam
     {
         LclVarDsc* varDsc = &m_pCompiler->lvaTable[i];
 
-#ifdef DEBUG
-        varDsc->lvNumSsaNames = SsaConfig::UNINIT_SSA_NUM; // Start off fresh...
-#endif
-
         if (varDsc->lvIsParam || m_pCompiler->info.compInitMem || varDsc->lvMustInit ||
             (varDsc->lvTracked &&
              VarSetOps::IsMember(m_pCompiler, m_pCompiler->fgFirstBB->bbLiveIn, varDsc->lvVarIndex)))
         {
-            unsigned ssaName = pRenameState->AllocSsaNum(i);
-
+            unsigned ssaName = m_pCompiler->lvaTable[i].lvPerSsaData.AllocSsaNum(&m_allocator);
             // In ValueNum we'd assume un-inited variables get FIRST_SSA_NUM.
             assert(ssaName == SsaConfig::FIRST_SSA_NUM);
-#ifdef DEBUG
-            varDsc->lvNumSsaNames++;
-#endif
             pRenameState->PushInit(i, ssaName);
         }
     }
 
     // In ValueNum we'd assume un-inited memory gets FIRST_SSA_NUM.
     // The memory is a parameter.  Use FIRST_SSA_NUM as first SSA name.
-    unsigned initMemoryCount = pRenameState->AllocMemorySsaNum();
+    unsigned initMemoryCount = m_pCompiler->lvMemoryPerSsaData.AllocSsaNum(&m_allocator);
     assert(initMemoryCount == SsaConfig::FIRST_SSA_NUM);
     for (MemoryKind memoryKind : allMemoryKinds())
     {
@@ -1768,9 +1757,6 @@ void SsaBuilder::RenameVariables(BlkToBlkSetMap* domTree, SsaRenameState* pRenam
             DBG_SSA_JITDUMP("[SsaBuilder::RenameVariables] done with BB%02u\n", block->bbNum);
         }
     }
-
-    // Remember the number of memory SSA names.
-    m_pCompiler->lvMemoryNumSsaNames = pRenameState->MemoryCount();
 }
 
 #ifdef DEBUG
