@@ -1682,7 +1682,7 @@ void SsaBuilder::RenameVariables(BlkToBlkSetMap* domTree, SsaRenameState* pRenam
 #ifdef DEBUG
             varDsc->lvNumSsaNames++;
 #endif
-            pRenameState->Push(nullptr, i, count);
+            pRenameState->PushLclInit(i, count);
         }
     }
 

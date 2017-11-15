@@ -2,23 +2,6 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-// ==++==
-//
-
-//
-
-//
-// ==--==
-
-/*XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
-XX                                                                           XX
-XX                                  SSA                                      XX
-XX                                                                           XX
-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
-*/
-
 #include "jitpch.h"
 #include "ssaconfig.h"
 #include "ssarenamestate.h"
@@ -28,13 +11,14 @@ XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
  *
  * @params alloc The allocator class used to allocate jitstd data.
  */
-SsaRenameState::SsaRenameState(const jitstd::allocator<int>& alloc,
-                               unsigned                      lvaCount,
-                               bool                          byrefStatesMatchGcHeapStates)
+SsaRenameState::SsaRenameState(CompAllocator* alloc,
+                               unsigned       lvaCount,
+                               bool           byrefStatesMatchGcHeapStates)
     : counts(nullptr)
-    , stacks(nullptr)
-    , definedLocs(alloc)
-    , memoryStack(alloc)
+    , m_lclStacks(nullptr)
+    , m_blockStack(nullptr)
+    , m_freeStack(nullptr)
+    , m_memoryStacks()
     , memoryCount(0)
     , lvaCount(lvaCount)
     , m_alloc(alloc)
@@ -51,7 +35,7 @@ void SsaRenameState::EnsureCounts()
 {
     if (counts == nullptr)
     {
-        counts = jitstd::utility::allocate<unsigned>(m_alloc, lvaCount);
+        counts = new (m_alloc) unsigned[lvaCount];
         for (unsigned i = 0; i < lvaCount; ++i)
         {
             counts[i] = SsaConfig::FIRST_SSA_NUM;
@@ -66,12 +50,12 @@ void SsaRenameState::EnsureCounts()
  */
 void SsaRenameState::EnsureStacks()
 {
-    if (stacks == nullptr)
+    if (m_lclStacks == nullptr)
     {
-        stacks = jitstd::utility::allocate<Stack*>(m_alloc, lvaCount);
+        m_lclStacks = new (m_alloc) Stack*[lvaCount];
         for (unsigned i = 0; i < lvaCount; ++i)
         {
-            stacks[i] = nullptr;
+            m_lclStacks[i] = nullptr;
         }
     }
 }
@@ -112,12 +96,58 @@ unsigned SsaRenameState::CountForUse(unsigned lclNum)
     EnsureStacks();
     DBG_SSA_JITDUMP("[SsaRenameState::CountForUse] V%02u\n", lclNum);
 
-    Stack* stack = stacks[lclNum];
-    if (stack == nullptr || stack->empty())
+    Stack* stack = m_lclStacks[lclNum];
+    if (stack == nullptr)
     {
         return SsaConfig::UNINIT_SSA_NUM;
     }
-    return stack->back().m_count;
+    return stack->m_ssaNum;
+}
+
+SsaRenameState::Stack* SsaRenameState::AllocBlockState(Stack* list, Stack* stack, unsigned bbNum, unsigned lclNum, unsigned ssaNum)
+{
+    Stack* state = m_freeStack;
+
+    if (state != nullptr)
+    {
+        m_freeStack = state->m_list;
+    }
+    else
+    {
+        state = static_cast<Stack*>(m_alloc->Alloc(sizeof(Stack)));
+    }
+
+    return new (state, jitstd::placement_t()) Stack(list, stack, bbNum, lclNum, ssaNum);
+}
+
+void SsaRenameState::FreeBlockStateList(Stack* first, Stack* last)
+{
+    last->m_list = m_freeStack;
+    m_freeStack  = first;
+}
+
+/**
+ * Pushes the initial SSA number onto the lclNum stack.
+ *
+ * @params lclNum The local variable def whose stack the count needs to be pushed onto.
+ * @params ssaNum The initial SSA number to be pushed onto the stack.
+ *
+ * @remarks Usually called when renaming a "def."
+ */
+void SsaRenameState::PushLclInit(unsigned lclNum, unsigned ssaNum)
+{
+    EnsureStacks();
+
+    // We'll use BB00 here to indicate the "block before any real blocks..."
+    DBG_SSA_JITDUMP("[SsaRenameState::PushInit] BB00, V%02u, count = %d\n", lclNum, ssaNum);
+
+    Stack* stack = m_lclStacks[lclNum];
+    // The stack should be empty when PushInit is called
+    assert(stack == nullptr);
+    // Note that the block associated with these initialization definitions does not
+    // actually exists thus it will never be popped. Because of this we don't need to
+    // push these onto the block stack nor we need to use the free list.
+    m_lclStacks[lclNum] = new (m_alloc) Stack(nullptr, stack, 0, lclNum, ssaNum);
 }
 
 /**
@@ -127,42 +157,36 @@ unsigned SsaRenameState::CountForUse(unsigned lclNum)
  * @params count The current count value that needs to be pushed on to the stack.
  *
  * @remarks Usually called when renaming a "def."
- *          Create stack lazily when needed for the first time.
  */
-void SsaRenameState::Push(BasicBlock* bb, unsigned lclNum, unsigned count)
+void SsaRenameState::Push(BasicBlock* block, unsigned lclNum, unsigned ssaNum)
 {
     EnsureStacks();
 
-    // We'll use BB00 here to indicate the "block before any real blocks..."
-    DBG_SSA_JITDUMP("[SsaRenameState::Push] BB%02u, V%02u, count = %d\n", bb != nullptr ? bb->bbNum : 0, lclNum, count);
+    unsigned bbNum = block->bbNum;
 
-    Stack* stack = stacks[lclNum];
+    DBG_SSA_JITDUMP("[SsaRenameState::Push] BB%02u, V%02u, count = %d\n", bbNum, lclNum, ssaNum);
 
-    if (stack == nullptr)
+    Stack* stack = m_lclStacks[lclNum];
+
+    if ((stack == nullptr) || (stack->m_bbNum != bbNum))
     {
-        DBG_SSA_JITDUMP("\tCreating a new stack\n");
-        stack = stacks[lclNum] = new (jitstd::utility::allocate<Stack>(m_alloc), jitstd::placement_t()) Stack(m_alloc);
-    }
+        stack = new (m_alloc) Stack(m_blockStack, stack, bbNum, lclNum, ssaNum);
 
-    if (stack->empty() || stack->back().m_bb != bb)
-    {
-        stack->push_back(SsaRenameStateForBlock(bb, count));
-        // Remember that we've pushed a def for this loc (so we don't have
-        // to traverse *all* the locs to do the necessary pops later).
-        definedLocs.push_back(SsaRenameStateLocDef(bb, lclNum));
+        m_lclStacks[lclNum] = stack;
+        m_blockStack = stack;
     }
     else
     {
-        stack->back().m_count = count;
+        stack->m_ssaNum = ssaNum;
     }
 
 #ifdef DEBUG
     if (JitTls::GetCompiler()->verboseSsa)
     {
         printf("\tContents of the stack: [");
-        for (Stack::iterator iter2 = stack->begin(); iter2 != stack->end(); iter2++)
+        for (Stack* s = stack; s != nullptr; s = s->m_stack)
         {
-            printf("<BB%02u, %d>", ((*iter2).m_bb != nullptr ? (*iter2).m_bb->bbNum : 0), (*iter2).m_count);
+            printf("<BB%02u, %d>", s->m_bbNum, s->m_ssaNum);
         }
         printf("]\n");
 
@@ -173,27 +197,38 @@ void SsaRenameState::Push(BasicBlock* bb, unsigned lclNum, unsigned count)
 
 void SsaRenameState::PopBlockStacks(BasicBlock* block)
 {
-    DBG_SSA_JITDUMP("[SsaRenameState::PopBlockStacks] BB%02u\n", block->bbNum);
-    // Iterate over the stacks for all the variables, popping those that have an entry
-    // for "block" on top.
-    while (!definedLocs.empty() && definedLocs.back().m_bb == block)
+    unsigned const bbNum = block->bbNum;
+
+    DBG_SSA_JITDUMP("[SsaRenameState::PopBlockStacks] BB%02u\n", bbNum);
+
+    Stack* const firstFree = m_blockStack;
+    Stack* lastFree        = nullptr;
+
+    for (Stack* stack = m_blockStack; (stack != nullptr) && (stack->m_bbNum == bbNum); stack = stack->m_list)
     {
-        unsigned lclNum = definedLocs.back().m_lclNum;
-        assert(stacks != nullptr); // Cannot be empty because definedLocs is not empty.
-        Stack* stack = stacks[lclNum];
-        assert(stack != nullptr);
-        assert(stack->back().m_bb == block);
-        stack->pop_back();
-        definedLocs.pop_back();
+        // This states's local stack better have the state on top.
+        assert(m_lclStacks[stack->m_lclNum] == stack); 
+        
+        // Pop the state from the local stack.
+        m_lclStacks[stack->m_lclNum] = stack->m_stack;
+        lastFree = stack;
     }
-#ifdef DEBUG
-    // It should now be the case that no stack in stacks has an entry for "block" on top --
-    // the loop above popped them all.
-    for (unsigned i = 0; i < lvaCount; ++i)
+
+    if (lastFree != nullptr)
     {
-        if (stacks != nullptr && stacks[i] != nullptr && !stacks[i]->empty())
+        // Pop all states from the block stack.
+        m_blockStack = lastFree->m_list;
+        FreeBlockStateList(firstFree, lastFree);
+    }
+
+#ifdef DEBUG
+    if (m_lclStacks != nullptr)
+    {
+        // It should now be the case that no stack in stacks has an entry for "block" on top --
+        // the loop above popped them all.
+        for (unsigned i = 0; i < lvaCount; ++i)
         {
-            assert(stacks[i]->back().m_bb != block);
+            assert((m_lclStacks[i] == nullptr) || (m_lclStacks[i]->m_bbNum != bbNum));
         }
     }
     if (JitTls::GetCompiler()->verboseSsa)
@@ -205,10 +240,10 @@ void SsaRenameState::PopBlockStacks(BasicBlock* block)
 
 void SsaRenameState::PopBlockMemoryStack(MemoryKind memoryKind, BasicBlock* block)
 {
-    auto& stack = memoryStack[memoryKind];
-    while (stack.size() > 0 && stack.back().m_bb == block)
+    Stack*& stack = m_memoryStacks[memoryKind];
+    while ((stack != nullptr) && (stack->m_bbNum == block->bbNum))
     {
-        stack.pop_back();
+        stack = stack->m_stack;
     }
 }
 
@@ -228,18 +263,10 @@ void SsaRenameState::DumpStacks()
         EnsureStacks();
         for (unsigned i = 0; i < lvaCount; ++i)
         {
-            Stack* stack = stacks[i];
             printf("V%02u:\t", i);
-            if (stack != nullptr)
+            for (Stack* s = m_lclStacks[i]; s != nullptr; s = s->m_stack)
             {
-                for (Stack::iterator iter2 = stack->begin(); iter2 != stack->end(); ++iter2)
-                {
-                    if (iter2 != stack->begin())
-                    {
-                        printf(", ");
-                    }
-                    printf("<BB%02u, %2d>", ((*iter2).m_bb != nullptr ? (*iter2).m_bb->bbNum : 0), (*iter2).m_count);
-                }
+                printf("<BB%02u, %2d>%s", s->m_bbNum, s->m_ssaNum, (s->m_stack != nullptr) ? ", " : "");
             }
             printf("\n");
         }
