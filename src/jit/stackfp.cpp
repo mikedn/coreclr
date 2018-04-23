@@ -2789,14 +2789,14 @@ void CodeGen::genCondJumpFltStackFP(GenTree* cond, BasicBlock* jumpTrue, BasicBl
     if (cond->gtFlags & GTF_RELOP_NAN_UN)
     {
         // Generate the first jump (NaN check)
-        genCondJmpInsStackFP(EJ_jpe, jumpTrue, NULL, bDoTransition);
+        genCondJmpInsStackFP(EJ_jp, jumpTrue, NULL, bDoTransition);
     }
     else
     {
         jumpFalse->bbFlags |= BBF_JMP_TARGET | BBF_HAS_LABEL;
 
         // Generate the first jump (NaN check)
-        genCondJmpInsStackFP(EJ_jpe, jumpFalse, NULL, bDoTransition);
+        genCondJmpInsStackFP(EJ_jp, jumpFalse, NULL, bDoTransition);
     }
 
     /* Generate the second jump (comparison) */
