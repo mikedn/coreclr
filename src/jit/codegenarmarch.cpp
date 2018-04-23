@@ -1351,13 +1351,13 @@ void CodeGen::genRangeCheck(GenTree* oper)
         //  constant operand in the second position
         src1    = arrLen;
         src2    = arrIndex;
-        jmpKind = genJumpKindForOper(GT_LE, CK_UNSIGNED);
+        jmpKind = EJ_ls;
     }
     else
     {
         src1    = arrIndex;
         src2    = arrLen;
-        jmpKind = genJumpKindForOper(GT_GE, CK_UNSIGNED);
+        jmpKind = EJ_hs;
     }
 
     var_types bndsChkType = genActualType(src2->TypeGet());
@@ -1500,8 +1500,7 @@ void CodeGen::genCodeForArrIndex(GenTreeArrIndex* arrIndex)
     emit->emitIns_R_R_I(ins_Load(TYP_INT), EA_PTRSIZE, tmpReg, arrReg, offset); // a 4 BYTE sign extending load
     emit->emitIns_R_R(INS_cmp, EA_4BYTE, tgtReg, tmpReg);
 
-    emitJumpKind jmpGEU = genJumpKindForOper(GT_GE, CK_UNSIGNED);
-    genJumpToThrowHlpBlk(jmpGEU, SCK_RNGCHK_FAIL);
+    genJumpToThrowHlpBlk(EJ_hs, SCK_RNGCHK_FAIL);
 
     genProduceReg(arrIndex);
 }
@@ -1708,7 +1707,7 @@ void CodeGen::genCodeForIndexAddr(GenTreeIndexAddr* node)
 
         // Generate the range check.
         getEmitter()->emitInsBinary(INS_cmp, emitActualTypeSize(TYP_I_IMPL), index, &arrLen);
-        genJumpToThrowHlpBlk(genJumpKindForOper(GT_GE, CK_UNSIGNED), SCK_RNGCHK_FAIL, node->gtIndRngFailBB);
+        genJumpToThrowHlpBlk(EJ_hs, SCK_RNGCHK_FAIL, node->gtIndRngFailBB);
     }
 
     // Compute the address of the array element.
@@ -2924,8 +2923,7 @@ void CodeGen::genIntToIntCast(GenTree* treeNode)
         {
             // We only need to check for a negative value in sourceReg
             emit->emitIns_R_I(INS_cmp, cmpSize, sourceReg, 0);
-            emitJumpKind jmpLT = genJumpKindForOper(GT_LT, CK_SIGNED);
-            genJumpToThrowHlpBlk(jmpLT, SCK_OVERFLOW);
+            genJumpToThrowHlpBlk(EJ_lt, SCK_OVERFLOW);
             noway_assert(genTypeSize(srcType) == 4 || genTypeSize(srcType) == 8);
             // This is only interesting case to ensure zero-upper bits.
             if ((srcType == TYP_INT) && (dstType == TYP_ULONG))
@@ -2957,8 +2955,7 @@ void CodeGen::genIntToIntCast(GenTree* treeNode)
 #elif defined(_TARGET_ARM64_)
             emit->emitIns_R_I(INS_tst, cmpSize, sourceReg, castInfo.typeMask);
 #endif // _TARGET_ARM*
-            emitJumpKind jmpNotEqual = genJumpKindForOper(GT_NE, CK_SIGNED);
-            genJumpToThrowHlpBlk(jmpNotEqual, SCK_OVERFLOW);
+            genJumpToThrowHlpBlk(EJ_ne, SCK_OVERFLOW);
         }
         else
         {
@@ -2985,8 +2982,7 @@ void CodeGen::genIntToIntCast(GenTree* treeNode)
                 emit->emitIns_R_R(INS_cmp, cmpSize, sourceReg, tmpReg);
             }
 
-            emitJumpKind jmpGT = genJumpKindForOper(GT_GT, CK_SIGNED);
-            genJumpToThrowHlpBlk(jmpGT, SCK_OVERFLOW);
+            genJumpToThrowHlpBlk(EJ_gt, SCK_OVERFLOW);
 
 // Compare with the MIN
 
@@ -3005,8 +3001,7 @@ void CodeGen::genIntToIntCast(GenTree* treeNode)
                 emit->emitIns_R_R(INS_cmp, cmpSize, sourceReg, tmpReg);
             }
 
-            emitJumpKind jmpLT = genJumpKindForOper(GT_LT, CK_SIGNED);
-            genJumpToThrowHlpBlk(jmpLT, SCK_OVERFLOW);
+            genJumpToThrowHlpBlk(EJ_lt, SCK_OVERFLOW);
         }
         ins = INS_mov;
     }
