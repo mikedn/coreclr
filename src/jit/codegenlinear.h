@@ -371,4 +371,20 @@ inline void genCheckConsumeNode(GenTree* treeNode)
 }
 #endif // DEBUG
 
+struct GenConditionDesc
+{
+    emitJumpKind jumpKind;
+
+    static const GenConditionDesc& Get(GenCondition condition)
+    {
+        assert(condition.GetCode() < _countof(map));
+        const GenConditionDesc& desc = map[condition.GetCode()];
+        assert(desc.jumpKind != EJ_NONE);
+        return desc;
+    }
+
+private:
+    static const GenConditionDesc map[32];
+};
+
 #endif // !LEGACY_BACKEND
