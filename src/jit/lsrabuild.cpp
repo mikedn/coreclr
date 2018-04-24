@@ -1249,7 +1249,7 @@ int LinearScan::ComputeOperandDstCount(GenTree* operand)
         // Stores and void-typed operands may be encountered when processing call nodes, which contain
         // pointers to argument setup stores.
         assert(operand->OperIsStore() || operand->OperIsBlkOp() || operand->OperIsPutArgStk() ||
-               operand->OperIsCompare() || operand->OperIs(GT_CMP) || operand->IsSIMDEqualityOrInequality() ||
+               operand->OperIsCompare() || operand->OperIs(GT_CMP, GT_TEST) || operand->IsSIMDEqualityOrInequality() ||
                operand->TypeGet() == TYP_VOID);
         return 0;
     }
@@ -3247,7 +3247,7 @@ void LinearScan::BuildGCWriteBarrier(GenTree* tree)
 void LinearScan::BuildCmp(GenTree* tree)
 {
     TreeNodeInfo* info = currentNodeInfo;
-    assert(tree->OperIsCompare() || tree->OperIs(GT_CMP) || tree->OperIs(GT_JCMP));
+    assert(tree->OperIsCompare() || tree->OperIs(GT_CMP, GT_TEST) || tree->OperIs(GT_JCMP));
 
     info->srcCount = 0;
     assert((info->dstCount == 1) || (tree->TypeGet() == TYP_VOID));

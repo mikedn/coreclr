@@ -111,6 +111,7 @@ bool Lowering::IsContainableImmed(GenTree* parentNode, GenTree* childNode)
             case GT_XOR:
             case GT_TEST_EQ:
             case GT_TEST_NE:
+            case GT_TEST:
                 return emitter::emitIns_valid_imm_for_alu(immVal, size);
             case GT_JCMP:
                 assert(((parentNode->gtFlags & GTF_JCMP_TST) == 0) ? (immVal == 0) : isPow2(immVal));
@@ -123,6 +124,7 @@ bool Lowering::IsContainableImmed(GenTree* parentNode, GenTree* childNode)
             case GT_GE:
             case GT_GT:
             case GT_CMP:
+            case GT_TEST:
             case GT_AND:
             case GT_OR:
             case GT_XOR:

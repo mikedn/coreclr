@@ -1301,14 +1301,14 @@ void CodeGen::genFloatReturn(GenTree* treeNode)
 #endif // _TARGET_X86_
 
 //------------------------------------------------------------------------
-// genCodeForCompare: Produce code for a GT_EQ/GT_NE/GT_LT/GT_LE/GT_GE/GT_GT/GT_TEST_EQ/GT_TEST_NE/GT_CMP node.
+// genCodeForCompare: Produce code for a GT_EQ/GT_NE/GT_LT/GT_LE/GT_GE/GT_GT/GT_TEST_EQ/GT_TEST_NE/GT_CMP/GT_TEST node.
 //
 // Arguments:
 //    tree - the node
 //
 void CodeGen::genCodeForCompare(GenTreeOp* tree)
 {
-    assert(tree->OperIs(GT_EQ, GT_NE, GT_LT, GT_LE, GT_GE, GT_GT, GT_TEST_EQ, GT_TEST_NE, GT_CMP));
+    assert(tree->OperIs(GT_EQ, GT_NE, GT_LT, GT_LE, GT_GE, GT_GT, GT_TEST_EQ, GT_TEST_NE, GT_CMP, GT_TEST));
 
     // TODO-XArch-CQ: Check if we can use the currently set flags.
     // TODO-XArch-CQ: Check for the case where we can simply transfer the carry bit to a register
@@ -1722,6 +1722,7 @@ void CodeGen::genCodeForTreeNode(GenTree* treeNode)
         case GT_TEST_EQ:
         case GT_TEST_NE:
         case GT_CMP:
+        case GT_TEST:
             genCodeForCompare(treeNode->AsOp());
             break;
 
@@ -5797,7 +5798,7 @@ void CodeGen::genLeaInstruction(GenTreeAddrMode* lea)
 //
 void CodeGen::genCompareFloat(GenTree* treeNode)
 {
-    assert(treeNode->OperIsCompare());
+    assert(treeNode->OperIsCompare() || treeNode->OperIs(GT_CMP));
 
     GenTreeOp* tree    = treeNode->AsOp();
     GenTree*   op1     = tree->gtOp1;
@@ -5810,20 +5811,21 @@ void CodeGen::genCompareFloat(GenTree* treeNode)
     assert(varTypeIsFloating(op1Type));
     assert(op1Type == op2Type);
 
-    regNumber   targetReg = treeNode->gtRegNum;
-    instruction ins;
-    emitAttr    cmpAttr;
+    regNumber    targetReg = treeNode->gtRegNum;
+    instruction  ins       = ins_FloatCompare(op1Type);
+    emitAttr     cmpAttr   = emitTypeSize(op1Type);
+    GenCondition condition;
 
-    GenCondition condition = GenCondition::FromFloatRelop(treeNode);
-
-    if (condition.PreferSwap())
+    if (treeNode->OperIsCompare())
     {
-        condition = GenCondition::Swap(condition);
-        std::swap(op1, op2);
-    }
+        condition = GenCondition::FromFloatRelop(treeNode);
 
-    ins     = ins_FloatCompare(op1Type);
-    cmpAttr = emitTypeSize(op1Type);
+        if (condition.PreferSwap())
+        {
+            condition = GenCondition::Swap(condition);
+            std::swap(op1, op2);
+        }
+    }
 
     getEmitter()->emitInsBinary(ins, cmpAttr, op1, op2);
 
@@ -5845,7 +5847,7 @@ void CodeGen::genCompareFloat(GenTree* treeNode)
 //    None.
 void CodeGen::genCompareInt(GenTree* treeNode)
 {
-    assert(treeNode->OperIsCompare() || treeNode->OperIs(GT_CMP));
+    assert(treeNode->OperIsCompare() || treeNode->OperIs(GT_CMP, GT_TEST));
 
     GenTreeOp* tree      = treeNode->AsOp();
     GenTree*   op1       = tree->gtOp1;
@@ -5862,7 +5864,7 @@ void CodeGen::genCompareInt(GenTree* treeNode)
     instruction ins;
     var_types   type = TYP_UNKNOWN;
 
-    if (tree->OperIs(GT_TEST_EQ, GT_TEST_NE))
+    if (tree->OperIs(GT_TEST_EQ, GT_TEST_NE, GT_TEST))
     {
         ins = INS_test;
 
@@ -5919,7 +5921,7 @@ void CodeGen::genCompareInt(GenTree* treeNode)
         // The common type cannot be smaller than any of the operand types, we're probably mixing int/long
         assert(genTypeSize(type) >= max(genTypeSize(op1Type), genTypeSize(op2Type)));
         // Small unsigned int types (TYP_BOOL can use anything) should use unsigned comparisons
-        assert(!(varTypeIsSmallInt(type) && varTypeIsUnsigned(type)) || ((tree->gtFlags & GTF_UNSIGNED) != 0));
+        // assert(!(varTypeIsSmallInt(type) && varTypeIsUnsigned(type)) || ((tree->gtFlags & GTF_UNSIGNED) != 0));
         // If op1 is smaller then it cannot be in memory, we're probably missing a cast
         assert((genTypeSize(op1Type) >= genTypeSize(type)) || !op1->isUsedFromMemory());
         // If op2 is smaller then it cannot be in memory, we're probably missing a cast

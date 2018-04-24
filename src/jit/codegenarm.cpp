@@ -1150,7 +1150,7 @@ void CodeGen::genCkfinite(GenTree* treeNode)
 }
 
 //------------------------------------------------------------------------
-// genCodeForCompare: Produce code for a GT_EQ/GT_NE/GT_LT/GT_LE/GT_GE/GT_GT/GT_CMP node.
+// genCodeForCompare: Produce code for a GT_EQ/GT_NE/GT_LT/GT_LE/GT_GE/GT_GT/GT_CMP/GT_TEST node.
 //
 // Arguments:
 //    tree - the node
@@ -1178,7 +1178,6 @@ void CodeGen::genCodeForCompare(GenTreeOp* tree)
     if (varTypeIsFloating(op1Type))
     {
         assert(op1Type == op2Type);
-        assert(!tree->OperIs(GT_CMP));
         emit->emitInsBinary(INS_vcmp, emitTypeSize(op1Type), op1, op2);
         // vmrs with register 0xf has special meaning of transferring flags
         emit->emitIns_R(INS_vmrs, EA_4BYTE, REG_R15);
@@ -1187,7 +1186,7 @@ void CodeGen::genCodeForCompare(GenTreeOp* tree)
     {
         assert(!varTypeIsFloating(op2Type));
         var_types cmpType = (op1Type == op2Type) ? op1Type : TYP_INT;
-        emit->emitInsBinary(INS_cmp, emitTypeSize(cmpType), op1, op2);
+        emit->emitInsBinary(tree->OperIs(GT_TEST) ? INS_tst : INS_cmp, emitTypeSize(cmpType), op1, op2);
     }
 
     // Are we evaluating this into a register?

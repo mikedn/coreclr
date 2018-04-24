@@ -177,8 +177,11 @@ GenTree* Lowering::LowerNode(GenTree* node)
         case GT_NE:
         case GT_TEST_EQ:
         case GT_TEST_NE:
-        case GT_CMP:
             return LowerCompare(node);
+
+        case GT_CMP:
+        case GT_TEST:
+            return node->gtNext;
 
         case GT_JTRUE:
             return LowerJTrue(node->AsOp());
@@ -2975,6 +2978,38 @@ GenTree* Lowering::LowerCompare(GenTree* cmp)
         }
     }
 #endif // _TARGET_XARCH_
+
+    GenCondition condition = GenCondition::FromRelop(cmp);
+
+    if (condition.PreferSwap())
+    {
+        condition = GenCondition::Swap(condition);
+        std::swap(cmp->AsOp()->gtOp1, cmp->AsOp()->gtOp2);
+    }
+
+    LIR::Use cmpUse;
+    if (BlockRange().TryGetUse(cmp, &cmpUse))
+    {
+        if (cmpUse.User()->OperIs(GT_JTRUE))
+        {
+            GenTree* jtrue = cmpUse.User();
+            jtrue->ChangeOper(GT_JCC);
+            jtrue->gtFlags |= GTF_USE_FLAGS;
+            jtrue->AsCC()->gtCondition = condition;
+        }
+        else
+        {
+            GenTreeCC* setcc = new (comp, GT_SETCC) GenTreeCC(GT_SETCC, condition, cmp->TypeGet());
+            setcc->gtFlags |= GTF_USE_FLAGS;
+            BlockRange().InsertAfter(cmp, setcc);
+            cmpUse.ReplaceWith(comp, setcc);
+        }
+    }
+
+    cmp->ChangeOper(cmp->OperIs(GT_TEST_EQ, GT_TEST_NE) ? GT_TEST : GT_CMP);
+    cmp->gtFlags |= GTF_SET_FLAGS;
+    cmp->gtType = TYP_VOID;
+
     ContainCheckCompare(cmp->AsOp());
     return cmp->gtNext;
 }

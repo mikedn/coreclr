@@ -3337,7 +3337,7 @@ void CodeGen::genCkfinite(GenTree* treeNode)
 }
 
 //------------------------------------------------------------------------
-// genCodeForCompare: Produce code for a GT_EQ/GT_NE/GT_LT/GT_LE/GT_GE/GT_GT/GT_TEST_EQ/GT_TEST_NE node.
+// genCodeForCompare: Produce code for a GT_EQ/GT_NE/GT_LT/GT_LE/GT_GE/GT_GT/GT_TEST_EQ/GT_TEST_NE/GT_TEST node.
 //
 // Arguments:
 //    tree - the node
@@ -3384,7 +3384,7 @@ void CodeGen::genCodeForCompare(GenTreeOp* tree)
         // We don't support swapping op1 and op2 to generate cmp reg, imm
         assert(!op1->isContainedIntOrIImmed());
 
-        instruction ins = tree->OperIs(GT_TEST_EQ, GT_TEST_NE) ? INS_tst : INS_cmp;
+        instruction ins = tree->OperIs(GT_TEST_EQ, GT_TEST_NE, GT_TEST) ? INS_tst : INS_cmp;
 
         if (op2->isContainedIntOrIImmed())
         {

@@ -236,6 +236,7 @@ GTNODE(HWIntrinsic      , GenTreeHWIntrinsic ,0,GTK_BINOP|GTK_EXOP)             
 //  LIR specific compare and conditional branch/set nodes:
 //-----------------------------------------------------------------------------
 
+GTNODE(TEST             , GenTreeOp          ,0,GTK_BINOP|GTK_NOVALUE)
 GTNODE(CMP              , GenTreeOp          ,0,GTK_BINOP|GTK_NOVALUE)  // Sets the condition flags according to the compare result. 
                                                                         // N.B. Not a relop, it does not produce a value and it cannot be reversed.
 GTNODE(JCMP             , GenTreeOp          ,0,GTK_BINOP|GTK_NOVALUE)  // Makes a comparison and jump if the condition specified.  Does not set flags

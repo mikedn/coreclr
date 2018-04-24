@@ -276,6 +276,7 @@ void CodeGen::genCodeForTreeNode(GenTree* treeNode)
         case GT_GE:
         case GT_GT:
         case GT_CMP:
+        case GT_TEST:
 #ifdef _TARGET_ARM64_
         case GT_TEST_EQ:
         case GT_TEST_NE:
