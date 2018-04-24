@@ -2987,12 +2987,22 @@ GenTree* Lowering::LowerCompare(GenTree* cmp)
         std::swap(cmp->AsOp()->gtOp1, cmp->AsOp()->gtOp2);
     }
 
+    bool removeCmp = false;
+
 #ifdef _TARGET_XARCH_
     // Simplify FP x == x. It is always true except when x is NaN so we can check only PF.
     if (condition.Is(GenCondition::FEQ) && cmp->gtGetOp1()->OperIs(GT_LCL_VAR) && cmp->gtGetOp2()->OperIs(GT_LCL_VAR) &&
         (cmp->gtGetOp1()->AsLclVar()->GetLclNum() == cmp->gtGetOp2()->AsLclVar()->GetLclNum()))
     {
         condition = GenCondition::NP;
+    }
+
+    if (condition.Is(GenCondition::SLT, GenCondition::SGE) && cmp->gtGetOp2()->IsIntegralConst(0) &&
+        cmp->gtGetOp1()->OperIs(GT_ADD, GT_SUB))
+    {
+        condition = condition.Is(GenCondition::SLT) ? GenCondition::S : GenCondition::NS;
+        cmp->gtGetOp1()->gtFlags |= GTF_SET_FLAGS;
+        removeCmp = true;
     }
 #endif
 
@@ -3013,6 +3023,15 @@ GenTree* Lowering::LowerCompare(GenTree* cmp)
             BlockRange().InsertAfter(cmp, setcc);
             cmpUse.ReplaceWith(comp, setcc);
         }
+    }
+
+    if (removeCmp)
+    {
+        GenTree* next = cmp->gtNext;
+        BlockRange().Remove(cmp);
+        cmp->gtGetOp1()->SetUnusedValue();
+        BlockRange().Remove(cmp->gtGetOp2());
+        return next;
     }
 
     cmp->ChangeOper(cmp->OperIs(GT_TEST_EQ, GT_TEST_NE) ? GT_TEST : GT_CMP);
