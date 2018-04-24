@@ -3024,13 +3024,17 @@ GenTree* Lowering::LowerCompare(GenTree* cmp)
             cmpUse.ReplaceWith(comp, setcc);
         }
     }
+    else
+    {
+        removeCmp = true;
+    }
 
     if (removeCmp)
     {
         GenTree* next = cmp->gtNext;
         BlockRange().Remove(cmp);
         cmp->gtGetOp1()->SetUnusedValue();
-        BlockRange().Remove(cmp->gtGetOp2());
+        cmp->gtGetOp2()->SetUnusedValue();
         return next;
     }
 
