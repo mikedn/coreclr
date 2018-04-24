@@ -2987,6 +2987,15 @@ GenTree* Lowering::LowerCompare(GenTree* cmp)
         std::swap(cmp->AsOp()->gtOp1, cmp->AsOp()->gtOp2);
     }
 
+#ifdef _TARGET_XARCH_
+    // Simplify FP x == x. It is always true except when x is NaN so we can check only PF.
+    if (condition.Is(GenCondition::FEQ) && cmp->gtGetOp1()->OperIs(GT_LCL_VAR) && cmp->gtGetOp2()->OperIs(GT_LCL_VAR) &&
+        (cmp->gtGetOp1()->AsLclVar()->GetLclNum() == cmp->gtGetOp2()->AsLclVar()->GetLclNum()))
+    {
+        condition = GenCondition::NP;
+    }
+#endif
+
     LIR::Use cmpUse;
     if (BlockRange().TryGetUse(cmp, &cmpUse))
     {
