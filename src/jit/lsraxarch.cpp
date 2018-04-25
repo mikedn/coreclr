@@ -2335,19 +2335,6 @@ void LinearScan::BuildHWIntrinsic(GenTreeHWIntrinsic* intrinsicTree)
 
     switch (intrinsicID)
     {
-        case NI_SSE_CompareEqualOrderedScalar:
-        case NI_SSE_CompareEqualUnorderedScalar:
-        case NI_SSE_CompareNotEqualOrderedScalar:
-        case NI_SSE_CompareNotEqualUnorderedScalar:
-        case NI_SSE2_CompareEqualOrderedScalar:
-        case NI_SSE2_CompareEqualUnorderedScalar:
-        case NI_SSE2_CompareNotEqualOrderedScalar:
-        case NI_SSE2_CompareNotEqualUnorderedScalar:
-            info->internalIntCount = 1;
-            info->setInternalCandidates(this, RBM_BYTE_REGS);
-            info->isInternalRegDelayFree = true;
-            break;
-
         case NI_SSE_SetScalarVector128:
         case NI_SSE2_SetScalarVector128:
             // Need an internal register to stitch together all the values into a single vector in a SIMD reg.

@@ -311,6 +311,7 @@ private:
 #endif // FEATURE_SIMD
 #ifdef FEATURE_HW_INTRINSICS
     void LowerHWIntrinsic(GenTreeHWIntrinsic* node);
+    void LowerHWIntrinsicCC(GenTreeOp* node, GenCondition condition);
 #endif // FEATURE_HW_INTRINSICS
 
     // Utility functions

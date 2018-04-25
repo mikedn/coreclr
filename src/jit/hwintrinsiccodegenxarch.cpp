@@ -670,91 +670,21 @@ void CodeGen::genSSEIntrinsic(GenTreeHWIntrinsic* node)
     {
         case NI_SSE_CompareEqualOrderedScalar:
         case NI_SSE_CompareEqualUnorderedScalar:
-        {
-            assert(baseType == TYP_FLOAT);
-            op2Reg             = op2->gtRegNum;
-            regNumber   tmpReg = node->GetSingleTempReg();
-            instruction ins    = Compiler::insOfHWIntrinsic(intrinsicID, node->gtSIMDBaseType);
-
-            // Ensure we aren't overwriting targetReg
-            assert(tmpReg != targetReg);
-
-            emit->emitIns_R_R(ins, emitTypeSize(TYP_SIMD16), op1Reg, op2Reg);
-            emit->emitIns_R(INS_setnp, EA_1BYTE, targetReg);
-            emit->emitIns_R(INS_sete, EA_1BYTE, tmpReg);
-            emit->emitIns_R_R(INS_and, EA_1BYTE, tmpReg, targetReg);
-            emit->emitIns_R_R(INS_movzx, EA_1BYTE, targetReg, tmpReg);
-            break;
-        }
-
         case NI_SSE_CompareGreaterThanOrderedScalar:
         case NI_SSE_CompareGreaterThanUnorderedScalar:
-        {
-            assert(baseType == TYP_FLOAT);
-            op2Reg = op2->gtRegNum;
-
-            instruction ins = Compiler::insOfHWIntrinsic(intrinsicID, node->gtSIMDBaseType);
-            emit->emitIns_R_R(ins, emitTypeSize(TYP_SIMD16), op1Reg, op2Reg);
-            emit->emitIns_R(INS_seta, EA_1BYTE, targetReg);
-            emit->emitIns_R_R(INS_movzx, EA_1BYTE, targetReg, targetReg);
-            break;
-        }
-
         case NI_SSE_CompareGreaterThanOrEqualOrderedScalar:
         case NI_SSE_CompareGreaterThanOrEqualUnorderedScalar:
-        {
-            assert(baseType == TYP_FLOAT);
-            op2Reg = op2->gtRegNum;
-
-            instruction ins = Compiler::insOfHWIntrinsic(intrinsicID, node->gtSIMDBaseType);
-            emit->emitIns_R_R(ins, emitTypeSize(TYP_SIMD16), op1Reg, op2Reg);
-            emit->emitIns_R(INS_setae, EA_1BYTE, targetReg);
-            emit->emitIns_R_R(INS_movzx, EA_1BYTE, targetReg, targetReg);
-            break;
-        }
-
         case NI_SSE_CompareLessThanOrderedScalar:
         case NI_SSE_CompareLessThanUnorderedScalar:
-        {
-            assert(baseType == TYP_FLOAT);
-            op2Reg = op2->gtRegNum;
-
-            instruction ins = Compiler::insOfHWIntrinsic(intrinsicID, node->gtSIMDBaseType);
-            emit->emitIns_R_R(ins, emitTypeSize(TYP_SIMD16), op2Reg, op1Reg);
-            emit->emitIns_R(INS_seta, EA_1BYTE, targetReg);
-            emit->emitIns_R_R(INS_movzx, EA_1BYTE, targetReg, targetReg);
-            break;
-        }
-
         case NI_SSE_CompareLessThanOrEqualOrderedScalar:
         case NI_SSE_CompareLessThanOrEqualUnorderedScalar:
-        {
-            assert(baseType == TYP_FLOAT);
-            op2Reg = op2->gtRegNum;
-
-            instruction ins = Compiler::insOfHWIntrinsic(intrinsicID, node->gtSIMDBaseType);
-            emit->emitIns_R_R(ins, emitTypeSize(TYP_SIMD16), op2Reg, op1Reg);
-            emit->emitIns_R(INS_setae, EA_1BYTE, targetReg);
-            emit->emitIns_R_R(INS_movzx, EA_1BYTE, targetReg, targetReg);
-            break;
-        }
-
         case NI_SSE_CompareNotEqualOrderedScalar:
         case NI_SSE_CompareNotEqualUnorderedScalar:
         {
             assert(baseType == TYP_FLOAT);
-            op2Reg             = op2->gtRegNum;
-            regNumber   tmpReg = node->GetSingleTempReg();
-            instruction ins    = Compiler::insOfHWIntrinsic(intrinsicID, node->gtSIMDBaseType);
-
-            // Ensure we aren't overwriting targetReg
-            assert(tmpReg != targetReg);
-
-            emit->emitIns_R_R(ins, emitTypeSize(TYP_SIMD16), op1Reg, op2Reg);
-            emit->emitIns_R(INS_setp, EA_1BYTE, targetReg);
-            emit->emitIns_R(INS_setne, EA_1BYTE, tmpReg);
-            emit->emitIns_R_R(INS_or, EA_1BYTE, tmpReg, targetReg);
-            emit->emitIns_R_R(INS_movzx, EA_1BYTE, targetReg, tmpReg);
+            assert(targetType == TYP_VOID);
+            instruction ins = Compiler::insOfHWIntrinsic(intrinsicID, node->gtSIMDBaseType);
+            emit->emitIns_R_R(ins, emitTypeSize(TYP_SIMD16), op1Reg, op2->gtRegNum);
             break;
         }
 
@@ -884,91 +814,21 @@ void CodeGen::genSSE2Intrinsic(GenTreeHWIntrinsic* node)
 
         case NI_SSE2_CompareEqualOrderedScalar:
         case NI_SSE2_CompareEqualUnorderedScalar:
-        {
-            assert(baseType == TYP_DOUBLE);
-            op2Reg             = op2->gtRegNum;
-            regNumber   tmpReg = node->GetSingleTempReg();
-            instruction ins    = Compiler::insOfHWIntrinsic(intrinsicID, baseType);
-
-            // Ensure we aren't overwriting targetReg
-            assert(tmpReg != targetReg);
-
-            emit->emitIns_R_R(ins, emitTypeSize(TYP_SIMD16), op1Reg, op2Reg);
-            emit->emitIns_R(INS_setnp, EA_1BYTE, targetReg);
-            emit->emitIns_R(INS_sete, EA_1BYTE, tmpReg);
-            emit->emitIns_R_R(INS_and, EA_1BYTE, tmpReg, targetReg);
-            emit->emitIns_R_R(INS_movzx, EA_1BYTE, targetReg, tmpReg);
-            break;
-        }
-
         case NI_SSE2_CompareGreaterThanOrderedScalar:
         case NI_SSE2_CompareGreaterThanUnorderedScalar:
-        {
-            assert(baseType == TYP_DOUBLE);
-            op2Reg          = op2->gtRegNum;
-            instruction ins = Compiler::insOfHWIntrinsic(intrinsicID, baseType);
-
-            emit->emitIns_R_R(ins, emitTypeSize(TYP_SIMD16), op1Reg, op2Reg);
-            emit->emitIns_R(INS_seta, EA_1BYTE, targetReg);
-            emit->emitIns_R_R(INS_movzx, EA_1BYTE, targetReg, targetReg);
-            break;
-        }
-
         case NI_SSE2_CompareGreaterThanOrEqualOrderedScalar:
         case NI_SSE2_CompareGreaterThanOrEqualUnorderedScalar:
-        {
-            assert(baseType == TYP_DOUBLE);
-            op2Reg          = op2->gtRegNum;
-            instruction ins = Compiler::insOfHWIntrinsic(intrinsicID, baseType);
-
-            emit->emitIns_R_R(ins, emitTypeSize(TYP_SIMD16), op1Reg, op2Reg);
-            emit->emitIns_R(INS_setae, EA_1BYTE, targetReg);
-            emit->emitIns_R_R(INS_movzx, EA_1BYTE, targetReg, targetReg);
-            break;
-        }
-
         case NI_SSE2_CompareLessThanOrderedScalar:
         case NI_SSE2_CompareLessThanUnorderedScalar:
-        {
-            assert(baseType == TYP_DOUBLE);
-            op2Reg          = op2->gtRegNum;
-            instruction ins = Compiler::insOfHWIntrinsic(intrinsicID, baseType);
-
-            emit->emitIns_R_R(ins, emitTypeSize(TYP_SIMD16), op2Reg, op1Reg);
-            emit->emitIns_R(INS_seta, EA_1BYTE, targetReg);
-            emit->emitIns_R_R(INS_movzx, EA_1BYTE, targetReg, targetReg);
-            break;
-        }
-
         case NI_SSE2_CompareLessThanOrEqualOrderedScalar:
         case NI_SSE2_CompareLessThanOrEqualUnorderedScalar:
-        {
-            assert(baseType == TYP_DOUBLE);
-            op2Reg          = op2->gtRegNum;
-            instruction ins = Compiler::insOfHWIntrinsic(intrinsicID, baseType);
-
-            emit->emitIns_R_R(ins, emitTypeSize(TYP_SIMD16), op2Reg, op1Reg);
-            emit->emitIns_R(INS_setae, EA_1BYTE, targetReg);
-            emit->emitIns_R_R(INS_movzx, EA_1BYTE, targetReg, targetReg);
-            break;
-        }
-
         case NI_SSE2_CompareNotEqualOrderedScalar:
         case NI_SSE2_CompareNotEqualUnorderedScalar:
         {
             assert(baseType == TYP_DOUBLE);
-            op2Reg             = op2->gtRegNum;
-            instruction ins    = Compiler::insOfHWIntrinsic(intrinsicID, baseType);
-            regNumber   tmpReg = node->GetSingleTempReg();
-
-            // Ensure we aren't overwriting targetReg
-            assert(tmpReg != targetReg);
-
-            emit->emitIns_R_R(ins, emitTypeSize(TYP_SIMD16), op1Reg, op2Reg);
-            emit->emitIns_R(INS_setp, EA_1BYTE, targetReg);
-            emit->emitIns_R(INS_setne, EA_1BYTE, tmpReg);
-            emit->emitIns_R_R(INS_or, EA_1BYTE, tmpReg, targetReg);
-            emit->emitIns_R_R(INS_movzx, EA_1BYTE, targetReg, tmpReg);
+            assert(targetType == TYP_VOID);
+            instruction ins = Compiler::insOfHWIntrinsic(intrinsicID, baseType);
+            emit->emitIns_R_R(ins, emitTypeSize(TYP_SIMD16), op1Reg, op2->gtRegNum);
             break;
         }
 
@@ -1143,38 +1003,18 @@ void CodeGen::genSSE41Intrinsic(GenTreeHWIntrinsic* node)
             regNumber tmpReg = node->GetSingleTempReg();
             assert(Compiler::insOfHWIntrinsic(intrinsicID, node->gtSIMDBaseType) == INS_ptest);
             emit->emitIns_SIMD_R_R_R(INS_pcmpeqd, emitTypeSize(TYP_SIMD16), tmpReg, tmpReg, tmpReg);
-            emit->emitIns_R_R(INS_xor, EA_4BYTE, targetReg, targetReg);
             emit->emitIns_R_R(INS_ptest, emitTypeSize(TYP_SIMD16), op1Reg, tmpReg);
-            emit->emitIns_R(INS_setb, EA_1BYTE, targetReg);
             break;
         }
 
         case NI_SSE41_TestAllZeros:
         case NI_SSE41_TestZ:
-        {
-            assert(Compiler::insOfHWIntrinsic(intrinsicID, node->gtSIMDBaseType) == INS_ptest);
-            emit->emitIns_R_R(INS_xor, EA_4BYTE, targetReg, targetReg);
-            emit->emitIns_R_R(INS_ptest, emitTypeSize(TYP_SIMD16), op1Reg, op2->gtRegNum);
-            emit->emitIns_R(INS_sete, EA_1BYTE, targetReg);
-            break;
-        }
-
         case NI_SSE41_TestC:
-        {
-            assert(Compiler::insOfHWIntrinsic(intrinsicID, node->gtSIMDBaseType) == INS_ptest);
-            emit->emitIns_R_R(INS_xor, EA_4BYTE, targetReg, targetReg);
-            emit->emitIns_R_R(INS_ptest, emitTypeSize(TYP_SIMD16), op1Reg, op2->gtRegNum);
-            emit->emitIns_R(INS_setb, EA_1BYTE, targetReg);
-            break;
-        }
-
         case NI_SSE41_TestMixOnesZeros:
         case NI_SSE41_TestNotZAndNotC:
         {
             assert(Compiler::insOfHWIntrinsic(intrinsicID, node->gtSIMDBaseType) == INS_ptest);
-            emit->emitIns_R_R(INS_xor, EA_4BYTE, targetReg, targetReg);
             emit->emitIns_R_R(INS_ptest, emitTypeSize(TYP_SIMD16), op1Reg, op2->gtRegNum);
-            emit->emitIns_R(INS_seta, EA_1BYTE, targetReg);
             break;
         }
 
@@ -1405,26 +1245,10 @@ void CodeGen::genAvxOrAvx2Intrinsic(GenTreeHWIntrinsic* node)
         }
 
         case NI_AVX_TestC:
-        {
-            emit->emitIns_R_R(INS_xor, EA_4BYTE, targetReg, targetReg);
-            emit->emitIns_R_R(ins, attr, op1->gtRegNum, op2->gtRegNum);
-            emit->emitIns_R(INS_setb, EA_1BYTE, targetReg);
-            break;
-        }
-
         case NI_AVX_TestNotZAndNotC:
-        {
-            emit->emitIns_R_R(INS_xor, EA_4BYTE, targetReg, targetReg);
-            emit->emitIns_R_R(ins, attr, op1->gtRegNum, op2->gtRegNum);
-            emit->emitIns_R(INS_seta, EA_1BYTE, targetReg);
-            break;
-        }
-
         case NI_AVX_TestZ:
         {
-            emit->emitIns_R_R(INS_xor, EA_4BYTE, targetReg, targetReg);
             emit->emitIns_R_R(ins, attr, op1->gtRegNum, op2->gtRegNum);
-            emit->emitIns_R(INS_sete, EA_1BYTE, targetReg);
             break;
         }
 
