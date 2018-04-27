@@ -217,6 +217,10 @@ void LinearScan::BuildNode(GenTree* tree)
 #endif // _TARGET_X86_
             break;
 
+        case GT_SELCC:
+            info->srcCount = appendBinaryLocationInfoToList(tree->AsOp());
+            break;
+
         case GT_JMP:
             info->srcCount = 0;
             assert(info->dstCount == 0);

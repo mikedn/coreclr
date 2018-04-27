@@ -1529,6 +1529,7 @@ class Compiler
     friend class LIR;
     friend class ObjectAllocator;
     friend struct GenTree;
+    friend class IfConversion;
 
 #ifndef _TARGET_64BIT_
     friend class DecomposeLongs;

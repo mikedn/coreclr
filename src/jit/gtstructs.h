@@ -129,6 +129,7 @@ GTSTRUCT_1(HWIntrinsic , GT_HWIntrinsic)
 GTSTRUCT_1(AllocObj    , GT_ALLOCOBJ)
 GTSTRUCT_1(RuntimeLookup, GT_RUNTIMELOOKUP)
 GTSTRUCT_2(CC          , GT_JCC, GT_SETCC)
+GTSTRUCT_1(OpCC        , GT_SELCC)
 #if !defined(LEGACY_BACKEND) && defined(_TARGET_ARM_)
 GTSTRUCT_3(MultiRegOp  , GT_MUL_LONG, GT_PUTARG_REG, GT_BITCAST)
 #endif
