@@ -1436,6 +1436,45 @@ void CodeGen::inst_SETCC(GenCondition condition, var_types type, regNumber dstRe
 }
 
 //------------------------------------------------------------------------
+// inst_CMOVCC: Generate a CMOVcc instruction sequence.
+//
+// Arguments:
+//   condition - The condition
+//   type      - The type of the value to be produced
+//   op1       - First input operand
+//   op2       - Second input operand
+//
+// Notes:
+//    CMOV is used if available, otherwise a conditional branch and a normal
+//    MOV is used instead.
+//
+void CodeGen::inst_CMOVCC(GenCondition condition, var_types type, GenTree* op1, GenTree* op2)
+{
+    const instruction EJtoCMOV[]{INS_nop,   INS_nop,    INS_cmovo,  INS_cmovno, INS_cmovb,  INS_cmovae,
+                                 INS_cmove, INS_cmovne, INS_cmovbe, INS_cmova,  INS_cmovs,  INS_cmovns,
+                                 INS_cmovp, INS_cmovnp, INS_cmovl,  INS_cmovge, INS_cmovle, INS_cmovg};
+
+    const GenConditionDesc& desc = GenConditionDesc::Get(condition);
+
+    if (desc.oper == GT_NONE)
+    {
+        getEmitter()->emitInsBinary(EJtoCMOV[desc.jumpKind1], emitTypeSize(type), op1, op2);
+    }
+    else if (desc.oper == GT_OR)
+    {
+        getEmitter()->emitInsBinary(EJtoCMOV[desc.jumpKind1], emitTypeSize(type), op1, op2);
+        getEmitter()->emitInsBinary(EJtoCMOV[desc.jumpKind2], emitTypeSize(type), op1, op2);
+    }
+    else // if (desc.oper == GT_AND)
+    {
+        BasicBlock* nextLabel = genCreateTempLabel();
+        inst_JMP(emitter::emitReverseJumpKind(desc.jumpKind1), nextLabel);
+        getEmitter()->emitInsBinary(EJtoCMOV[desc.jumpKind2], emitTypeSize(type), op1, op2);
+        genDefineTempLabel(nextLabel);
+    }
+}
+
+//------------------------------------------------------------------------
 // genCodeForReturnTrap: Produce code for a GT_RETURNTRAP node.
 //
 // Arguments:
