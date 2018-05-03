@@ -317,6 +317,16 @@ public:
     // Requires that "*this" is not equal to the "end" position.
     inline BasicBlock* Current(Compiler* comp, BasicBlock* block);
 
+    bool IsCurrentEH()
+    {
+        return m_remainingNormSucc == 0;
+    }
+
+    bool HasCurrent()
+    {
+        return *this != AllSuccessorIterPosition();
+    }
+
     // Returns "true" iff "*this" is equal to "asi".
     bool operator==(const AllSuccessorIterPosition& asi)
     {
@@ -1386,6 +1396,46 @@ BasicBlock* AllSuccessorIterPosition::Current(Compiler* comp, BasicBlock* block)
 
 typedef BasicBlock::Successors<EHSuccessorIterPosition>::iterator  EHSuccessorIter;
 typedef BasicBlock::Successors<AllSuccessorIterPosition>::iterator AllSuccessorIter;
+
+// An enumerator of a block's all successors. In some cases (e.g. SsaBuilder::TopologicalSort)
+// using iterators is not exactly efficient, at least because they contain an unnecessary
+// member - a pointer to the Compiler object.
+class AllSuccessorEnumerator
+{
+    BasicBlock*              m_block;
+    AllSuccessorIterPosition m_pos;
+
+public:
+    // Needed only because ArrayStack is broken - its built-in storage is such
+    // that it default constructs elements that do not actually exist.
+    AllSuccessorEnumerator() : m_block(nullptr), m_pos()
+    {
+    }
+
+    // Constructs an enumerator of all `block`'s successors.
+    AllSuccessorEnumerator(Compiler* comp, BasicBlock* block) : m_block(block), m_pos(comp, block)
+    {
+    }
+
+    // Gets the block whose successors are enumerated.
+    BasicBlock* Block()
+    {
+        return m_block;
+    }
+
+    // Returns the next available successor or `nullptr` if there are no more successors.
+    BasicBlock* NextSuccessor(Compiler* comp)
+    {
+        if (!m_pos.HasCurrent())
+        {
+            return nullptr;
+        }
+
+        BasicBlock* succ = m_pos.Current(comp, m_block);
+        m_pos.Advance(comp, m_block);
+        return succ;
+    }
+};
 
 /*****************************************************************************/
 #endif // _BLOCK_H_
