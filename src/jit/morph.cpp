@@ -11194,6 +11194,10 @@ GenTree* Compiler::fgMorphCopyBlock(GenTree* tree)
 
                     dest = gtNewLclvNode(destLclNum, destLclVar->TypeGet());
                 }
+                else if (destLclNum != BAD_VAR_NUM)
+                {
+                    dest = gtNewLclFldNode(destLclNum, lvaTable[fieldLclNum].TypeGet(), lvaTable[fieldLclNum].lvFldOffset);
+                }
                 else
                 {
                     if (addrSpill)
