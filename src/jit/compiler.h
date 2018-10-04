@@ -9841,7 +9841,6 @@ public:
             case GT_NOP:
             case GT_RETURN:
             case GT_RETFILT:
-            case GT_PHI:
             case GT_RUNTIMELOOKUP:
             {
                 GenTreeUnOp* const unOp = node->AsUnOp();
@@ -9857,6 +9856,17 @@ public:
             }
 
             // Special nodes
+            case GT_PHI:
+                for (GenTreePhi::Use& use : node->AsPhi()->Uses())
+                {
+                    result = WalkTree(&use.op, node);
+                    if (result == fgWalkResult::WALK_ABORT)
+                    {
+                        return result;
+                    }
+                }
+                break;
+
             case GT_CMPXCHG:
             {
                 GenTreeCmpXchg* const cmpXchg = node->AsCmpXchg();

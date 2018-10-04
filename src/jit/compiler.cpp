@@ -7081,6 +7081,22 @@ void Compiler::CopyTestDataToCloneTree(GenTree* from, GenTree* to)
             CopyTestDataToCloneTree(from->gtArrElem.gtArrObj, to->gtArrElem.gtArrObj);
             return;
 
+        case GT_PHI:
+        {
+            GenTreePhi::UseIterator fromUse    = from->AsPhi()->Uses().begin();
+            GenTreePhi::UseIterator fromUseEnd = from->AsPhi()->Uses().end();
+            GenTreePhi::UseIterator toUse      = to->AsPhi()->Uses().begin();
+            GenTreePhi::UseIterator toUseEnd   = to->AsPhi()->Uses().end();
+
+            for (; (fromUse != fromUseEnd) && (toUse != toUseEnd); ++fromUse, ++toUse)
+            {
+                CopyTestDataToCloneTree(fromUse->op, toUse->op);
+            }
+
+            assert((fromUse == fromUseEnd) && (toUse == toUseEnd));
+            return;
+        }
+
         case GT_CMPXCHG:
             CopyTestDataToCloneTree(from->gtCmpXchg.gtOpLocation, to->gtCmpXchg.gtOpLocation);
             CopyTestDataToCloneTree(from->gtCmpXchg.gtOpValue, to->gtCmpXchg.gtOpValue);
@@ -10740,20 +10756,17 @@ void cNodeIR(Compiler* comp, GenTree* tree)
     }
     else if (op == GT_PHI)
     {
-        if (tree->gtOp.gtOp1 != nullptr)
+        bool first = true;
+        for (GenTreePhi::Use& use : tree->AsPhi()->Uses())
         {
-            bool first = true;
-            for (GenTreeArgList* args = tree->gtOp.gtOp1->AsArgList(); args != nullptr; args = args->Rest())
+            child = use.op;
+            if (!first)
             {
-                child = args->Current();
-                if (!first)
-                {
-                    chars += printf(",");
-                }
-                first = false;
-                chars += printf(" ");
-                chars += cOperandIR(comp, child);
+                chars += printf(",");
             }
+            first = false;
+            chars += printf(" ");
+            chars += cOperandIR(comp, child);
         }
     }
     else
