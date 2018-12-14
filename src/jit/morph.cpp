@@ -18189,6 +18189,31 @@ private:
             {
                 m_compiler->lvaSetVarAddrExposed(varDsc->lvIsStructField ? varDsc->lvParentLcl : val.LclNum());
             }
+            else if ((val.Offset() == 0) && (genTypeSize(varDsc->TypeGet()) == genTypeSize(node->TypeGet())) &&
+                     (varTypeIsFloating(varDsc->TypeGet()) != varTypeIsFloating(node->TypeGet())))
+            {
+                // We have something like IND<float>(ADDR(LCL_VAR<int>)) or some other
+                // floating point/integer reinterpretation tree, change it to use BITCAST.
+                if (user->OperIs(GT_ASG) && (user->gtGetOp1() == node))
+                {
+                    // This node is the LHS of an assignment, turn it into a LclVar
+                    // and insert the BITCAST node on the RHS of the assignment
+                    node->ChangeOper(GT_LCL_VAR);
+                    node->gtType = varDsc->TypeGet();
+                    node->gtFlags &= ~GTF_ALL_EFFECT;
+                    node->AsLclVar()->SetLclNum(val.LclNum());
+                    user->gtType        = varDsc->TypeGet();
+                    user->AsOp()->gtOp2 = m_compiler->gtNewOperNode(GT_BITCAST, varDsc->TypeGet(), user->gtGetOp2());
+                }
+                else
+                {
+                    node->ChangeOper(GT_BITCAST);
+                    node->gtFlags &= ~GTF_ALL_EFFECT;
+                    node->AsUnOp()->gtOp1 = m_compiler->gtNewLclvNode(val.LclNum(), varDsc->TypeGet());
+                }
+
+                INDEBUG(m_stmtModified = true;)
+            }
         }
 
         INDEBUG(val.Consume();)
