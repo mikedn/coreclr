@@ -919,7 +919,8 @@ void SsaBuilder::TreeRenameVariables(GenTree* tree, BasicBlock* block, SsaRename
     if ((tree->gtFlags & GTF_VAR_DEF) != 0)
     {
         // Allocate a new SSA number for this definition tree.
-        unsigned ssaNum = m_pCompiler->lvaTable[lclNum].lvPerSsaData.AllocSsaNum(m_allocator, block, tree);
+        unsigned      ssaNum = m_pCompiler->lvaTable[lclNum].lvPerSsaData.AllocSsaNum(m_allocator, block, tree);
+        LclSsaVarDsc* ssaDef = m_pCompiler->lvaTable[lclNum].lvPerSsaData.GetSsaDef(ssaNum);
 
         if ((tree->gtFlags & GTF_VAR_USEASG) != 0)
         {
@@ -927,7 +928,7 @@ void SsaBuilder::TreeRenameVariables(GenTree* tree, BasicBlock* block, SsaRename
             // of the use that is implied by this partial definition. The SSA number of the new
             // definition will be recorded in the m_opAsgnVarDefSsaNums map.
             tree->AsLclVarCommon()->SetSsaNum(pRenameState->CountForUse(lclNum));
-
+            ssaDef->AddUse(tree->AsLclVarCommon());
             m_pCompiler->GetOpAsgnVarDefSsaNums()->Set(tree, ssaNum);
         }
         else
@@ -966,7 +967,9 @@ void SsaBuilder::TreeRenameVariables(GenTree* tree, BasicBlock* block, SsaRename
             }
         }
         // Give the count as top of stack.
-        unsigned count = pRenameState->CountForUse(lclNum);
+        unsigned      count  = pRenameState->CountForUse(lclNum);
+        LclSsaVarDsc* ssaDef = m_pCompiler->lvaTable[lclNum].lvPerSsaData.GetSsaDef(count);
+        ssaDef->AddUse(tree->AsLclVarCommon());
         tree->gtLclVarCommon.SetSsaNum(count);
     }
 }
@@ -1029,6 +1032,9 @@ void SsaBuilder::AddDefToHandlerPhis(BasicBlock* block, unsigned lclNum, unsigne
                         phi->gtOp.gtOp1 = new (m_pCompiler, GT_LIST) GenTreeArgList(newPhiArg, args);
                         m_pCompiler->gtSetStmtInfo(stmt);
                         m_pCompiler->fgSetStmtSeq(stmt);
+
+                        LclSsaVarDsc* ssaDef = m_pCompiler->lvaTable[lclNum].lvPerSsaData.GetSsaDef(count);
+                        ssaDef->AddUse(newPhiArg);
 #ifdef DEBUG
                         phiFound = true;
 #endif
@@ -1261,12 +1267,15 @@ void SsaBuilder::AssignPhiNodeRhsVariables(BasicBlock* block, SsaRenameState* pR
             }
             if (!found)
             {
-                GenTree* newPhiArg =
+                GenTreePhiArg* newPhiArg =
                     new (m_pCompiler, GT_PHI_ARG) GenTreePhiArg(tree->gtOp.gtOp1->TypeGet(), lclNum, ssaNum, block);
                 argList             = (phiNode->gtOp.gtOp1 == nullptr ? nullptr : phiNode->gtOp.gtOp1->AsArgList());
                 phiNode->gtOp.gtOp1 = new (m_pCompiler, GT_LIST) GenTreeArgList(newPhiArg, argList);
                 DBG_SSA_JITDUMP("  Added phi arg u:%d for V%02u from " FMT_BB " in " FMT_BB ".\n", ssaNum, lclNum,
                                 block->bbNum, succ->bbNum);
+
+                LclSsaVarDsc* ssaDef = m_pCompiler->lvaTable[lclNum].lvPerSsaData.GetSsaDef(ssaNum);
+                ssaDef->AddUse(newPhiArg);
             }
 
             m_pCompiler->gtSetStmtInfo(stmt);
@@ -1415,12 +1424,15 @@ void SsaBuilder::AssignPhiNodeRhsVariables(BasicBlock* block, SsaRenameState* pR
                     if (!alreadyArg)
                     {
                         // Add the new argument.
-                        GenTree* newPhiArg =
+                        GenTreePhiArg* newPhiArg =
                             new (m_pCompiler, GT_PHI_ARG) GenTreePhiArg(lclVar->TypeGet(), lclNum, ssaNum, block);
                         phiNode->gtOp.gtOp1 = new (m_pCompiler, GT_LIST) GenTreeArgList(newPhiArg, argList);
 
                         DBG_SSA_JITDUMP("  Added phi arg u:%d for V%02u from " FMT_BB " in " FMT_BB ".\n", ssaNum,
                                         lclNum, block->bbNum, handlerStart->bbNum);
+
+                        LclSsaVarDsc* ssaDef = m_pCompiler->lvaTable[lclNum].lvPerSsaData.GetSsaDef(ssaNum);
+                        ssaDef->AddUse(newPhiArg);
 
                         m_pCompiler->gtSetStmtInfo(stmt);
                         m_pCompiler->fgSetStmtSeq(stmt);

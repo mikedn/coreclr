@@ -170,13 +170,25 @@ struct DefLoc
 // This class stores information associated with a LclVar SSA definition.
 class LclSsaVarDsc
 {
+    unsigned m_useCount;
+
 public:
-    LclSsaVarDsc()
+    LclSsaVarDsc() : m_useCount(0)
     {
     }
 
-    LclSsaVarDsc(BasicBlock* block, GenTree* tree) : m_defLoc(block, tree)
+    LclSsaVarDsc(BasicBlock* block, GenTree* tree) : m_useCount(0), m_defLoc(block, tree)
     {
+    }
+
+    void AddUse(GenTreeLclVarCommon* useNode)
+    {
+        m_useCount++;
+    }
+
+    bool IsSingleUse()
+    {
+        return m_useCount == 1;
     }
 
     ValueNumPair m_vnPair;
