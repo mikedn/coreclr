@@ -171,6 +171,15 @@ void Compiler::optEarlyProp()
 
     assert(fgSsaPassesCompleted == 1);
 
+    for (BasicBlock* block = fgFirstBB; block != nullptr; block = block->bbNext)
+    {
+        if (block->bbJumpKind == BBJ_COND)
+        {
+            compCurBB = block;
+            optDoEarlyPropForJTrue(block);
+        }
+    }
+
     if (!optDoEarlyPropForFunc())
     {
         return;
@@ -692,4 +701,267 @@ bool Compiler::optCanMoveNullCheckPastTree(GenTree* tree, bool isInsideTry)
         }
     }
     return result;
+}
+
+void Compiler::optDoEarlyPropForJTrue(BasicBlock* block)
+{
+    GenTreeUnOp* jtrue = block->lastNode()->AsUnOp();
+    assert(jtrue->OperIs(GT_JTRUE));
+
+    GenTreeOp* relop = jtrue->gtGetOp1()->AsOp();
+    assert(relop->OperIsCompare());
+
+    if (!relop->gtGetOp1()->OperIs(GT_LCL_VAR))
+    {
+        // First operand must be a local variable.
+        return;
+    }
+
+    if (relop->IsReverseOp() && !relop->gtGetOp2()->OperIsConst())
+    {
+        // If the second operand is executed first then it must be a constant,
+        // otherwise it doesn't matter.
+        //
+        // Of course, the second operand could be an arbitrary tree, if we can
+        // prove that it doesn't interfere with the tree we're going to replace
+        // the first operand with. Not an easy task, at least in part due to
+        // SSA representation limitations.
+        return;
+    }
+
+    GenTreeLclVar* lcl = relop->gtGetOp1()->AsLclVar();
+
+    if (!lvaInSsa(lcl->GetLclNum()))
+    {
+        // Not a SSA local variable.
+        return;
+    }
+
+    LclVarDsc*    lclDesc    = lvaGetDesc(lcl);
+    LclSsaVarDsc* lclSsaDesc = lclDesc->lvPerSsaData.GetSsaDef(lcl->GetSsaNum());
+
+    if (!lclSsaDesc->IsSingleUse())
+    {
+        // The SSA definition has multiple uses.
+        return;
+    }
+
+    if (lclSsaDesc->m_defLoc.m_tree == nullptr)
+    {
+        // The definition doesn't actually exist, it's a parameter or uninitialized variable.
+        return;
+    }
+
+    if (lclSsaDesc->m_defLoc.m_blk != block)
+    {
+        // The SSA definition is in another block. Perhaps it's worth trying to relax
+        // this and see if it matches anything.
+        return;
+    }
+
+    GenTreeOp* asg = lclSsaDesc->m_defLoc.m_tree->gtGetParent(nullptr)->AsOp();
+    assert(asg->OperIs(GT_ASG) && (asg->gtGetOp1() == lclSsaDesc->m_defLoc.m_tree));
+
+    if (!asg->gtGetOp1()->OperIs(GT_LCL_VAR))
+    {
+        // Make sure we don't run into a GT_LCL_FLD.
+        return;
+    }
+
+    GenTree* rhs = asg->AsOp()->gtGetOp2();
+
+    if (rhs->OperIs(GT_PHI))
+    {
+        // Can't do much with PHIs, at least not without a significant amount of work...
+        return;
+    }
+
+    GenTreeStmt* jtrueStmt = block->lastStmt();
+    assert(jtrueStmt->gtStmtExpr == jtrue);
+
+    // Maybe we're lucky and the assignment is in the preceding statement.
+    GenTreeStmt* asgStmt = jtrueStmt->gtPrevStmt;
+
+    if ((asgStmt != nullptr) && (asgStmt->gtStmtExpr == asg))
+    {
+// OK, we can simply replace the lcl node with its definition tree.
+
+#ifdef DEBUG
+        if (verbose)
+        {
+            printf("found JTRUE tree using an entire single-use tree:\n");
+            gtDispTree(asgStmt);
+            printf("---------------\n");
+            gtDispTree(jtrueStmt);
+            printf("\n");
+        }
+#endif // DEBUG
+
+        relop->gtOp1 = rhs;
+
+        fgMorphTree(jtrue);
+
+        // Erm, morph somtimes produces a JTRUE(0) or JTRUE(1) tree!?!.
+        // That's not valid, put the relop back.
+        if (!jtrue->gtGetOp1()->OperIsCompare())
+        {
+            assert(jtrue->gtGetOp1()->IsIntegralConst(0) || jtrue->gtGetOp1()->IsIntegralConst(1));
+            jtrue->gtOp1 = gtNewOperNode(jtrue->gtGetOp1()->IsIntegralConst(0) ? GT_NE : GT_EQ, TYP_INT,
+                                         gtNewIconNode(0), gtNewIconNode(0));
+            jtrue->gtOp1->gtFlags |= GTF_RELOP_JMP_USED;
+        }
+
+        gtSetStmtInfo(jtrueStmt);
+        fgSetStmtSeq(jtrueStmt);
+        fgRemoveStmt(block, asgStmt);
+
+#ifdef DEBUG
+        if (verbose)
+        {
+            printf("changed to:\n");
+            gtDispTree(jtrueStmt);
+            printf("---------------\n\n");
+        }
+#endif // DEBUG
+
+        return;
+    }
+
+    // Well, we weren't lucky and we don't know where the definiton is. We'll have to search
+    // for the statement because we need it later to call gtSetStmtInfo and fgSetStmtSeq.
+
+    for (GenTreeStmt* stmt = block->firstStmt(); stmt != nullptr; stmt = stmt->gtNextStmt)
+    {
+        if (stmt->AsStmt()->gtStmtExpr == asg)
+        {
+            asgStmt = stmt;
+            break;
+        }
+    }
+
+    if (asgStmt == nullptr)
+    {
+        // Could not find the statement. It's supposed to be in this block so it's probably
+        // located inside a tree, wrapped in a COMMA or CALL. Maybe we should include the
+        // statement in LclSsaVarDsc?
+        return;
+    }
+
+    // Let's see what part of the definition tree we can move. We're looking for a relop that
+    // can combine with the existing relop but some other opers could be useful as well:
+    //   - GT_CAST can sometimes combine with a relop by relop narrowing
+    //   - bitwise and arithmetic opers can combine with a 0/non-zero compare by means of flags
+    //   - some shifts could also combine with a 0/non-zero compare, though that doesn't work today
+    //
+    // Binary operators are bit more problematic - we start with one live range and by moving
+    // the node that one disappears.
+    // If the operator we're moving is unary, a single live range we'll extend to replace the
+    // old one so no harm done, hopefully.
+    // If the operator is binary and both its operands are variables (or more complex trees
+    // with even more variables) then we're going to end up extending more than one live range,
+    // which may impact register allocation. So for now let's be conservative and only move
+    // binary operators that have a constant operand.
+
+    GenTree*  newRhs    = rhs;
+    GenTree** newRhsUse = nullptr;
+
+    while (((newRhs->gtFlags & GTF_ALL_EFFECT) == 0) &&
+           (newRhs->OperIs(GT_NEG, GT_NOT, GT_CAST) ||
+            (newRhs->OperIs(GT_ADD, GT_SUB, GT_MUL, GT_DIV, GT_UDIV, GT_MOD, GT_UMOD, GT_AND, GT_OR, GT_XOR, GT_LSH,
+                            GT_RSH, GT_RSZ, GT_ROL, GT_ROR, GT_EQ, GT_NE, GT_GT, GT_GE, GT_LT, GT_LE) &&
+             newRhs->gtGetOp2()->OperIsConst())))
+    {
+        newRhsUse = &newRhs->AsOp()->gtOp1;
+        newRhs    = *newRhsUse;
+    }
+
+    if (rhs == newRhs)
+    {
+        // Could not find any suitable nodes to move.
+        return;
+    }
+
+#ifdef DEBUG
+    if (verbose)
+    {
+        printf("found JTRUE tree using a partial single-use tree:\n");
+        gtDispTree(asgStmt);
+        printf("---------------\n");
+        gtDispTree(jtrueStmt);
+        printf("\n");
+    }
+#endif // DEBUG
+
+    // TODO Watch out for small int types and normalize on load/store
+    if (newRhs->TypeGet() != lclDesc->TypeGet())
+    {
+        JITDUMP("changing variable type from %s to %s\n", varTypeName(lclDesc->TypeGet()),
+                varTypeName(newRhs->TypeGet()));
+
+        GenTreeLclVar* lhs = asg->gtGetOp1()->AsLclVar();
+
+        if (lclDesc->lvPerSsaData.GetCount() > 1)
+        {
+            JITDUMP("existing variable has multiple definitions and it cannot be retyped\n");
+
+            // The new RHS node has a different type than the old one. And the variable
+            // has multiple definitions so we cannot change its type, create a new one.
+            unsigned   newLclNum       = lvaGrabTemp(true DEBUGARG("jtrue-relop-subst"));
+            LclVarDsc* newLclDsc       = lvaGetDesc(newLclNum);
+            unsigned   newSsaNum       = newLclDsc->lvPerSsaData.AllocSsaNum(getAllocator(CMK_SSA), block, lhs);
+            newLclDsc->lvType          = genActualType(newRhs->TypeGet());
+            newLclDsc->lvStructGcCount = varTypeIsGC(newLclDsc->lvType);
+            // Unfortunately we can't actually put the new variable in SSA. While allocating
+            // a new SSA number for it isn't a problem, being in SSA also implies being tracked.
+            // And setting up a new tracked variable is complicated because it has to be added
+            // to lvaTrackedToVarNum and lvaTrackedCount. That it's not such a big problem in
+            // itself but then you must also update the flowgraph liveness bitvectors...
+            newLclDsc->lvInSsa   = false; // true;
+            newLclDsc->lvTracked = false;
+
+            lhs->gtType = newLclDsc->TypeGet();
+            lhs->SetLclNum(newLclNum);
+            lhs->SetSsaNum(newSsaNum);
+            asg->gtType = newLclDsc->TypeGet();
+            lcl->gtType = newLclDsc->TypeGet();
+            lcl->SetLclNum(newLclNum);
+            lcl->SetSsaNum(newSsaNum);
+        }
+        else
+        {
+            lclDesc->lvType = newRhs->TypeGet();
+
+            lclDesc->lvStructGcCount = varTypeIsGC(newRhs->TypeGet());
+
+            lhs->gtType = newRhs->TypeGet();
+            asg->gtType = newRhs->TypeGet();
+            lcl->gtType = newRhs->TypeGet();
+        }
+    }
+
+    // Move the rhs - newRhs chain from the ASG tree to the JTRUE tree.
+    asg->AsOp()->gtOp2 = newRhs;
+    *newRhsUse         = lcl;
+    relop->gtOp1       = rhs;
+
+    // Morph and update both statements.
+    fgMorphTree(asg);
+    fgMorphTree(jtrue);
+
+    gtSetStmtInfo(asgStmt);
+    fgSetStmtSeq(asgStmt);
+
+    gtSetStmtInfo(jtrueStmt);
+    fgSetStmtSeq(jtrueStmt);
+
+#ifdef DEBUG
+    if (verbose)
+    {
+        printf("changed to:\n");
+        gtDispTree(asgStmt);
+        printf("---------------\n");
+        gtDispTree(jtrueStmt);
+        printf("---------------\n\n");
+    }
+#endif // DEBUG
 }
