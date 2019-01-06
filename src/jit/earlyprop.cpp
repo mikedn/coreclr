@@ -171,6 +171,17 @@ void Compiler::optEarlyProp()
 
     assert(fgSsaPassesCompleted == 1);
 
+    for (BasicBlock* block = fgFirstBB; block != nullptr; block = block->bbNext)
+    {
+        compCurBB = block;
+        for (GenTreeStmt* stmt = block->firstStmt(); stmt != nullptr; stmt = stmt->gtNextStmt)
+        {
+            compCurStmt = stmt;
+            optForwardSubstition(block, stmt);
+        }
+    }
+
+
     if (!optDoEarlyPropForFunc())
     {
         return;
@@ -689,4 +700,156 @@ bool Compiler::optCanMoveNullCheckPastTree(GenTree* tree, bool isInsideTry)
         }
     }
     return result;
+}
+
+void Compiler::optForwardSubstition(BasicBlock* block, GenTreeStmt* stmt)
+{
+    GenTree* tree = stmt->gtStmtList;
+
+    if (tree->OperIs(GT_SWITCH))
+    {
+        return;
+    }
+
+    for (; tree != nullptr; tree = tree->gtNext)
+    {
+        if (tree->OperIsConst())
+        {
+            continue;
+        }
+
+        if (tree->OperIs(GT_LCL_VAR))
+        {
+            break;
+        }
+
+        return;
+    }
+
+    GenTreeLclVar* lcl = tree->AsLclVar();
+
+    if (!lvaInSsa(lcl->GetLclNum()) || ((lcl->gtFlags & GTF_VAR_DEF) != 0) || ((lcl->gtFlags & GTF_VAR_USEASG) != 0))
+    {
+        // Not a SSA local variable.
+        return;
+    }
+
+    if (lcl->GetSsaNum() == SsaConfig::RESERVED_SSA_NUM)
+    {
+        return;
+    }
+
+    LclVarDsc*    lclDesc = lvaGetDesc(lcl);
+    LclSsaVarDsc* lclSsaDesc = lclDesc->lvPerSsaData.GetSsaDef(lcl->GetSsaNum());
+
+    if (!lclSsaDesc->IsSingleUse())
+    {
+        // The SSA definition has multiple uses.
+        return;
+    }
+
+    if (lclSsaDesc->m_defLoc.m_tree == nullptr)
+    {
+        // The definition doesn't actually exist, it's a parameter or uninitialized variable.
+        return;
+    }
+
+    if (lclSsaDesc->m_defLoc.m_blk != block)
+    {
+        // The SSA definition is in another block. Perhaps it's worth trying to relax
+        // this and see if it matches anything.
+        return;
+    }
+
+    GenTreeOp* asg = lclSsaDesc->m_defLoc.m_tree->gtGetParent(nullptr)->AsOp();
+
+    if (!asg->OperIs(GT_ASG))
+    {
+        return;
+    }
+
+    assert(asg->OperIs(GT_ASG) && (asg->gtGetOp1() == lclSsaDesc->m_defLoc.m_tree));
+
+    if (!asg->gtGetOp1()->OperIs(GT_LCL_VAR))
+    {
+        // Make sure we don't run into a GT_LCL_FLD.
+        return;
+    }
+
+    GenTree* rhs = asg->AsOp()->gtGetOp2();
+
+    if (rhs->OperIs(GT_PHI))
+    {
+        // Can't do much with PHIs, at least not without a significant amount of work...
+        return;
+    }
+
+    // Maybe we're lucky and the assignment is in the preceding statement.
+    GenTreeStmt* asgStmt = stmt->gtPrevStmt;
+
+    if ((asgStmt != nullptr) && (asgStmt->gtStmtExpr == asg) && (asgStmt != stmt))
+    {
+        // OK, we can simply replace the lcl node with its definition tree.
+
+#ifdef DEBUG
+        if (verbose)
+        {
+            printf("found use of an entire single-use tree:\n");
+            gtDispTree(asgStmt);
+            printf("---------------\n");
+            gtDispTree(stmt);
+            printf("\n");
+        }
+#endif // DEBUG
+
+        GenTree** lclUse = nullptr;
+        GenTree* parent = lcl->gtGetParent(&lclUse);
+
+        if (parent == nullptr || lclUse == nullptr)
+        {
+            return;
+        }
+
+        assert(*lclUse == lcl);
+        *lclUse = rhs;
+
+        fgMorphTree(stmt->gtStmtExpr);
+
+        if (stmt->gtStmtExpr->OperIs(GT_JTRUE))
+        {
+            GenTreeUnOp* jtrue = stmt->gtStmtExpr->AsUnOp();
+            // Erm, morph somtimes produces a JTRUE(0) or JTRUE(1) tree!?!.
+            // That's not valid, put the relop back. Normally we should use
+            // fgMorphBlockStmt which will also remove the JTRUE statement.
+            // But that changes the flow graph and breaks the dominator tree
+            // built by SsaBuilder and used by VN copyprop. And of course,
+            // breaks PHIs that may now have "dead" args. The relop will survive
+            // until assertionprop when it will be removed. At that point the
+            // dominator tree is no longer needed so it doesn't matter if it is
+            // invalidated (though weirdly, PHIs would still be broken and
+            // RangeCheck needs those...).
+            if (!jtrue->gtGetOp1()->OperIsCompare())
+            {
+                assert(jtrue->gtGetOp1()->IsIntegralConst(0) || jtrue->gtGetOp1()->IsIntegralConst(1));
+                jtrue->gtOp1 = gtNewOperNode(jtrue->gtGetOp1()->IsIntegralConst(0) ? GT_NE : GT_EQ, TYP_INT,
+                    gtNewIconNode(0), gtNewIconNode(0));
+                jtrue->gtOp1->gtFlags |= GTF_RELOP_JMP_USED;
+            }
+        }
+
+        gtSetStmtInfo(stmt);
+        fgSetStmtSeq(stmt);
+        fgRemoveStmt(block, asgStmt);
+
+#ifdef DEBUG
+        if (verbose)
+        {
+            printf("changed to:\n");
+            gtDispTree(stmt);
+            printf("---------------\n\n");
+        }
+#endif // DEBUG
+
+        return;
+    }
 }

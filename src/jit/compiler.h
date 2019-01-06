@@ -6347,6 +6347,8 @@ public:
     void optEarlyProp();
     void optFoldNullCheck(GenTree* tree);
     bool optCanMoveNullCheckPastTree(GenTree* tree, bool isInsideTry);
+    void optDoEarlyPropForJTrue(BasicBlock* block);
+    void optForwardSubstition(BasicBlock* block, GenTreeStmt* stmt);
 
 #if ASSERTION_PROP
     /**************************************************************************
