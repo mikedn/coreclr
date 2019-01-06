@@ -1405,7 +1405,7 @@ public:
         unsigned sortNum = 0;
         while (sortNum < m_pCompiler->lvaTrackedCount)
         {
-            LclVarDsc* varDsc = m_pCompiler->lvaRefSorted[sortNum++];
+            LclVarDsc* varDsc = m_pCompiler->lvaGetDesc(m_pCompiler->lvaTrackedToVarNum[sortNum++]);
             var_types  varTyp = varDsc->TypeGet();
 
             if (varDsc->lvDoNotEnregister)
