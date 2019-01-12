@@ -7353,7 +7353,7 @@ void Compiler::fgCreateLoopPreHeader(unsigned lnum)
         }
         for (GenTreePhi::Use& use : op2->AsPhi()->Uses())
         {
-            GenTreePhiArg* phiArg = use.op->AsPhiArg();
+            GenTreePhiArg* phiArg = use.Node()->AsPhiArg();
             if (phiArg->gtPredBB == head)
             {
                 phiArg->gtPredBB = preHead;

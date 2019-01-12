@@ -2203,12 +2203,18 @@ struct GenTreePhi final : public GenTree
 {
     struct Use
     {
-        GenTree* op;
-        Use*     next;
+        GenTree* m_node;
+        Use*     m_next;
 
-        Use(GenTree* op, Use* next = nullptr) : op(op), next(next)
+        Use(GenTree* node, Use* next = nullptr) : m_node(node), m_next(next)
         {
-            assert(op->OperIs(GT_PHI_ARG));
+            assert(node->OperIs(GT_PHI_ARG));
+        }
+
+        GenTree* Node() const
+        {
+            assert(m_node->OperIs(GT_PHI_ARG));
+            return m_node;
         }
     };
 
@@ -2233,7 +2239,7 @@ struct GenTreePhi final : public GenTree
 
         UseIterator& operator++()
         {
-            m_use = m_use->next;
+            m_use = m_use->m_next;
             return *this;
         }
 
@@ -2309,7 +2315,7 @@ struct GenTreePhi final : public GenTree
 
         for (; (i1 != end1) && (i2 != end2); ++i1, ++i2)
         {
-            if (!Compare(i1->op, i2->op))
+            if (!Compare(i1->Node(), i2->Node()))
             {
                 return false;
             }

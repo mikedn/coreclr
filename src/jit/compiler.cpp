@@ -7090,7 +7090,7 @@ void Compiler::CopyTestDataToCloneTree(GenTree* from, GenTree* to)
 
             for (; (fromUse != fromUseEnd) && (toUse != toUseEnd); ++fromUse, ++toUse)
             {
-                CopyTestDataToCloneTree(fromUse->op, toUse->op);
+                CopyTestDataToCloneTree(fromUse->Node(), toUse->Node());
             }
 
             assert((fromUse == fromUseEnd) && (toUse == toUseEnd));
@@ -10759,7 +10759,7 @@ void cNodeIR(Compiler* comp, GenTree* tree)
         bool first = true;
         for (GenTreePhi::Use& use : tree->AsPhi()->Uses())
         {
-            child = use.op;
+            child = use.Node();
             if (!first)
             {
                 chars += printf(",");
