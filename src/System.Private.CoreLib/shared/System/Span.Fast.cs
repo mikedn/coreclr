@@ -170,10 +170,13 @@ namespace System
 
         public Span<T> this[Range range]
         {
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
             get
             {
-                int start = range.Start.FromEnd ? _length - range.Start.Value : range.Start.Value;
-                int end = range.End.FromEnd ? _length - range.End.Value : range.End.Value;
+                Index startIndex = range.Start;
+                int start = startIndex.FromEnd ? _length - startIndex.Value : startIndex.Value;
+                Index endIndex = range.End;
+                int end = endIndex.FromEnd ? _length - endIndex.Value : endIndex.Value;
                 return Slice(start, end - start);
             }
         }

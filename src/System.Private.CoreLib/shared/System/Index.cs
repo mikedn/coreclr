@@ -3,6 +3,7 @@
 // See the LICENSE file in the project root for more information.
 
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 
 namespace System
 {
@@ -10,6 +11,7 @@ namespace System
     {
         private readonly int _value;
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public Index(int value, bool fromEnd)
         {
             if (value < 0)
@@ -17,7 +19,14 @@ namespace System
                 ThrowHelper.ThrowValueArgumentOutOfRange_NeedNonNegNumException();
             }
 
-            _value = fromEnd ? ~value : value;
+            if (fromEnd)
+            {
+                _value = ~value;
+            }
+            else
+            {
+                _value = value;
+            }
         }
 
         public int Value => _value < 0 ? ~_value : _value;

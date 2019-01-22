@@ -18246,6 +18246,51 @@ public:
                 PopValue();
                 break;
 
+            case GT_ASG:
+            {
+                assert(TopValue(2).Node() == node);
+
+                Value& lhs = TopValue(1);
+                Value& rhs = TopValue(0);
+
+                assert(lhs.Node() == node->AsOp()->gtGetOp1());
+                assert(rhs.Node() == node->AsOp()->gtGetOp2());
+
+                if (rhs.Node()->OperIs(GT_LCL_FLD) && lhs.Node()->TypeGet() == rhs.Node()->TypeGet() &&
+                    lhs.IsLocation() && m_compiler->lvaGetDesc(lhs.LclNum())->lvPromoted && rhs.IsLocation() &&
+                    m_compiler->lvaGetDesc(rhs.LclNum())->lvPromoted &&
+                    m_compiler->lvaGetDesc(lhs.LclNum())->lvFieldCnt == 2 &&
+                    m_compiler->lvaGetDesc(lhs.LclNum())->lvVerTypeInfo.GetClassHandle() &&
+                    m_compiler->lvaGetDesc(rhs.LclNum())->lvVerTypeInfo.GetClassHandle())
+                {
+                    node->SetOper(GT_COMMA);
+
+                    LclVarDsc* lhsVar = m_compiler->lvaGetDesc(lhs.LclNum());
+                    LclVarDsc* rhsVar = m_compiler->lvaGetDesc(rhs.LclNum());
+
+                    node->AsOp()->gtOp1 = m_compiler->gtNewAssignNode(
+                        m_compiler->gtNewLclvNode(lhsVar->lvFieldLclStart,
+                                                  m_compiler->lvaGetDesc(lhsVar->lvFieldLclStart)->TypeGet()),
+                        m_compiler->gtNewLclvNode(rhsVar->lvFieldLclStart,
+                                                  m_compiler->lvaGetDesc(rhsVar->lvFieldLclStart)->TypeGet()));
+
+                    node->AsOp()->gtOp2 = m_compiler->gtNewAssignNode(
+                        m_compiler->gtNewLclvNode(lhsVar->lvFieldLclStart + 1,
+                                                  m_compiler->lvaGetDesc(lhsVar->lvFieldLclStart + 1)->TypeGet()),
+                        m_compiler->gtNewLclvNode(rhsVar->lvFieldLclStart + 1,
+                                                  m_compiler->lvaGetDesc(rhsVar->lvFieldLclStart + 1)->TypeGet()));
+
+                    lhs.Consume();
+                    rhs.Consume();
+                    PopValue();
+                    PopValue();
+                    INDEBUG(m_stmtModified = true;)
+                    break;
+                }
+            }
+
+                __fallthrough;
+
             default:
                 while (TopValue(0).Node() != node)
                 {
