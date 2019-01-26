@@ -5916,6 +5916,41 @@ void Compiler::fgValueNumberBlock(BasicBlock* blk)
     compCurStmtNum = blk->bbStmtNum - 1; // Set compCurStmtNum
 #endif
 
+    if (blk != fgFirstBB)
+    {
+        bool reachable = false;
+
+        for (flowList* edge = blk->bbPreds; edge != nullptr; edge = edge->flNext)
+        {
+            BasicBlock* pred = edge->flBlock;
+
+            if ((pred->bbFlags & BBF_DEAD) != 0)
+            {
+                continue;
+            }
+
+            if (pred->bbJumpKind == BBJ_COND)
+            {
+                GenTreeUnOp* jtrue = pred->lastNode()->AsUnOp();
+                assert(jtrue->OperIs(GT_JTRUE));
+                ValueNum vn = jtrue->gtGetOp1()->gtVNPair.GetConservative();
+
+                if (vnStore->IsVNInt32Constant(vn) && ((vnStore->ConstantValue<int>(vn) == 0) ? (pred->bbJumpDest == blk) : (pred->bbNext == blk)))
+                {
+                    continue;
+                }
+            }
+
+            reachable = true;
+            break;
+        }
+
+        if (!reachable)
+        {
+            blk->bbFlags |= BBF_DEAD;
+        }
+    }
+
     unsigned outerLoopNum = BasicBlock::NOT_IN_LOOP;
     GenTreeStmt* stmt     = blk->firstStmt();
 
@@ -5929,6 +5964,7 @@ void Compiler::fgValueNumberBlock(BasicBlock* blk)
         GenTreeLclVar* newSsaDef = asg->AsOp()->gtGetOp1()->AsLclVar();
         ValueNumPair   phiVNP;
         ValueNumPair   sameVNP;
+        bool sameSet = false;
 
         for (GenTreePhi::Use& use : asg->AsOp()->gtGetOp2()->AsPhi()->Uses())
         {
@@ -5938,24 +5974,38 @@ void Compiler::fgValueNumberBlock(BasicBlock* blk)
 
             phiArg->gtVNPair = phiArgVNP;
 
+            bool ignoreSame = (phiArg->gtPredBB->bbFlags & BBF_DEAD) != 0;
+
             if (phiVNP.GetLiberal() == ValueNumStore::NoVN)
             {
                 // This is the first PHI argument
                 phiVNP  = ValueNumPair(phiArgSsaNumVN, phiArgSsaNumVN);
-                sameVNP = phiArgVNP;
+
+                if (!ignoreSame)
+                {
+                    sameVNP = phiArgVNP;
+                    sameSet = true;
+                }
             }
             else
             {
                 phiVNP = vnStore->VNPairForFunc(newSsaDef->TypeGet(), VNF_Phi,
                                                 ValueNumPair(phiArgSsaNumVN, phiArgSsaNumVN), phiVNP);
 
-                if ((sameVNP.GetLiberal() != phiArgVNP.GetLiberal()) ||
-                    (sameVNP.GetConservative() != phiArgVNP.GetConservative()))
+                if (!ignoreSame)
                 {
-                    // If this argument's VNs are different from "same" then change "same" to NoVN.
-                    // Note that this means that if any argument's VN is NoVN then the final result
-                    // will also be NoVN, which is what we want.
-                    sameVNP.SetBoth(ValueNumStore::NoVN);
+                    if (!sameSet)
+                    {
+                        sameVNP = phiArgVNP;
+                    }
+                    else if ((sameVNP.GetLiberal() != phiArgVNP.GetLiberal()) ||
+                        (sameVNP.GetConservative() != phiArgVNP.GetConservative()))
+                    {
+                        // If this argument's VNs are different from "same" then change "same" to NoVN.
+                        // Note that this means that if any argument's VN is NoVN then the final result
+                        // will also be NoVN, which is what we want.
+                        sameVNP.SetBoth(ValueNumStore::NoVN);
+                    }
                 }
             }
         }

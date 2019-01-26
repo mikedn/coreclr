@@ -273,6 +273,10 @@ void BasicBlock::dspFlags()
     {
         printf("internal ");
     }
+    if (bbFlags & BBF_DEAD)
+    {
+        printf("dead ");
+    }
     if (bbFlags & BBF_FAILED_VERIFICATION)
     {
         printf("failV ");
