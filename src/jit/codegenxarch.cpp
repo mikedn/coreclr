@@ -4357,11 +4357,11 @@ void CodeGen::genCodeForShiftRMW(GenTreeStoreInd* storeInd)
         if (shiftByValue == 1)
         {
             // There is no source in this case, as the shift by count is embedded in the instruction opcode itself.
-            GetEmitter()->emitInsRMW(ins, attr, storeInd);
+            GetEmitter()->emitInsRMW(ins, attr, storeInd->Addr());
         }
         else
         {
-            GetEmitter()->emitInsRMW(ins, attr, storeInd, shiftBy);
+            GetEmitter()->emitInsRMW(ins, attr, storeInd->Addr(), shiftBy);
         }
     }
     else
@@ -4373,7 +4373,7 @@ void CodeGen::genCodeForShiftRMW(GenTreeStoreInd* storeInd)
         genCopyRegIfNeeded(shiftBy, REG_RCX);
 
         // The shiftBy operand is implicit, so call the unary version of emitInsRMW.
-        GetEmitter()->emitInsRMW(ins, attr, storeInd);
+        GetEmitter()->emitInsRMW(ins, attr, storeInd->Addr());
     }
 }
 
@@ -4735,7 +4735,7 @@ void CodeGen::genCodeForIndir(GenTreeIndir* tree)
     else
     {
         genConsumeAddress(addr);
-        emit->emitInsLoadInd(ins_Load(targetType), emitTypeSize(tree), tree->GetRegNum(), tree);
+        emit->emitInsLoad(ins_Load(targetType), emitTypeSize(tree), tree->GetRegNum(), tree->Addr());
     }
 
     genProduceReg(tree);
@@ -4975,7 +4975,8 @@ void CodeGen::genCodeForStoreInd(GenTreeStoreInd* tree)
             if (dataIsUnary)
             {
                 // generate code for unary RMW memory ops like neg/not
-                GetEmitter()->emitInsRMW(genGetInsForOper(data->OperGet(), data->TypeGet()), emitTypeSize(tree), tree);
+                GetEmitter()->emitInsRMW(genGetInsForOper(data->OperGet(), data->TypeGet()), emitTypeSize(tree),
+                                         tree->Addr());
             }
             else
             {
@@ -5002,19 +5003,19 @@ void CodeGen::genCodeForStoreInd(GenTreeStoreInd* tree)
                     //     the above if condition once Decode() routine is fixed.
                     assert(rmwSrc->isContainedIntOrIImmed());
                     instruction ins = rmwSrc->IsIntegralConst(1) ? INS_inc : INS_dec;
-                    GetEmitter()->emitInsRMW(ins, emitTypeSize(tree), tree);
+                    GetEmitter()->emitInsRMW(ins, emitTypeSize(tree), tree->Addr());
                 }
                 else
                 {
                     // generate code for remaining binary RMW memory ops like add/sub/and/or/xor
                     GetEmitter()->emitInsRMW(genGetInsForOper(data->OperGet(), data->TypeGet()), emitTypeSize(tree),
-                                             tree, rmwSrc);
+                                             tree->Addr(), rmwSrc);
                 }
             }
         }
         else
         {
-            GetEmitter()->emitInsStoreInd(ins_Store(data->TypeGet()), emitTypeSize(tree), tree);
+            GetEmitter()->emitInsStore(ins_Store(data->TypeGet()), emitTypeSize(tree), tree->Addr(), tree->Data());
         }
     }
 }
@@ -7171,34 +7172,26 @@ void CodeGen::genSSE41RoundOp(GenTreeOp* treeNode)
         }
         else if (srcNode->isIndir())
         {
-            GenTreeIndir* memIndir = srcNode->AsIndir();
-            GenTree*      memBase  = memIndir->gtOp1;
+            GenTree* addr = srcNode->AsIndir()->Addr();
 
-            switch (memBase->OperGet())
+            switch (addr->OperGet())
             {
                 case GT_LCL_VAR_ADDR:
                 {
-                    varNum = memBase->AsLclVarCommon()->GetLclNum();
+                    varNum = addr->AsLclVar()->GetLclNum();
                     offset = 0;
-
-                    // Ensure that all the GenTreeIndir values are set to their defaults.
-                    assert(memBase->GetRegNum() == REG_NA);
-                    assert(!memIndir->HasIndex());
-                    assert(memIndir->Scale() == 1);
-                    assert(memIndir->Offset() == 0);
-
                     break;
                 }
 
                 case GT_CLS_VAR_ADDR:
                 {
-                    emit->emitIns_R_C_I(ins, size, dstReg, memBase->AsClsVar()->gtClsVarHnd, 0, ival);
+                    emit->emitIns_R_C_I(ins, size, dstReg, addr->AsClsVar()->gtClsVarHnd, 0, ival);
                     return;
                 }
 
                 default:
                 {
-                    emit->emitIns_R_A_I(ins, size, dstReg, memIndir, ival);
+                    emit->emitIns_R_A_I(ins, size, dstReg, addr, ival);
                     return;
                 }
             }

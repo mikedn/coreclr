@@ -4993,6 +4993,29 @@ protected:
 #endif
 };
 
+class AddressModeInfo
+{
+    GenTree* m_addr;
+
+public:
+    AddressModeInfo(GenTree* addr) : m_addr(addr)
+    {
+    }
+
+    GenTree* GetAddr() const
+    {
+        return m_addr;
+    }
+
+    bool     IsContainedAddressMode() const;
+    bool     HasBase() const;
+    bool     HasIndex() const;
+    GenTree* GetBase() const;
+    GenTree* GetIndex() const;
+    unsigned GetScale() const;
+    ssize_t  GetOffset() const;
+};
+
 // Indir is just an op, no additional data, but some additional abstractions
 struct GenTreeIndir : public GenTreeOp
 {
@@ -5005,12 +5028,35 @@ struct GenTreeIndir : public GenTreeOp
     }
 
     // these methods provide an interface to the indirection node which
-    bool     HasBase();
-    bool     HasIndex();
-    GenTree* Base();
-    GenTree* Index();
-    unsigned Scale();
-    ssize_t  Offset();
+    bool HasBase()
+    {
+        return AddressModeInfo(Addr()).HasBase();
+    }
+
+    bool HasIndex()
+    {
+        return AddressModeInfo(Addr()).HasIndex();
+    }
+
+    GenTree* Base()
+    {
+        return AddressModeInfo(Addr()).GetBase();
+    }
+
+    GenTree* Index()
+    {
+        return AddressModeInfo(Addr()).GetIndex();
+    }
+
+    unsigned Scale()
+    {
+        return AddressModeInfo(Addr()).GetScale();
+    }
+
+    ssize_t Offset()
+    {
+        return AddressModeInfo(Addr()).GetOffset();
+    }
 
     GenTreeIndir(genTreeOps oper, var_types type, GenTree* addr, GenTree* data) : GenTreeOp(oper, type, addr, data)
     {

@@ -1654,12 +1654,12 @@ private:
     CORINFO_FIELD_HANDLE emitFltOrDblConst(double constValue, emitAttr attr);
     regNumber emitInsBinary(instruction ins, emitAttr attr, GenTree* dst, GenTree* src);
     regNumber emitInsTernary(instruction ins, emitAttr attr, GenTree* dst, GenTree* src1, GenTree* src2);
-    void emitInsLoadInd(instruction ins, emitAttr attr, regNumber dstReg, GenTreeIndir* mem);
-    void emitInsStoreInd(instruction ins, emitAttr attr, GenTreeStoreInd* mem);
+    void emitInsLoad(instruction ins, emitAttr attr, regNumber dstReg, GenTree* addr);
+    void emitInsStore(instruction ins, emitAttr attr, GenTree* addr, GenTree* data);
     void emitInsStoreLcl(instruction ins, emitAttr attr, GenTreeLclVarCommon* varNode);
     insFormat emitMapFmtForIns(insFormat fmt, instruction ins);
     insFormat emitMapFmtAtoM(insFormat fmt);
-    void emitHandleMemOp(GenTreeIndir* indir, instrDesc* id, insFormat fmt, instruction ins);
+    void emitSetAddrMode(instrDesc* id, instruction ins, insFormat fmt, GenTree* addr);
     void spillIntArgRegsToShadowSlots();
 
 /************************************************************************/

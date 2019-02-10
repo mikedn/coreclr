@@ -16133,54 +16133,46 @@ bool GenTree::isContainedIndir() const
     return isIndir() && isContained();
 }
 
-bool GenTree::isIndirAddrMode()
-{
-    return isIndir() && AsIndir()->Addr()->OperIsAddrMode() && AsIndir()->Addr()->isContained();
-}
-
 bool GenTree::isIndir() const
 {
     return OperGet() == GT_IND || OperGet() == GT_STOREIND;
 }
 
-bool GenTreeIndir::HasBase()
+bool AddressModeInfo::IsContainedAddressMode() const
 {
-    return Base() != nullptr;
+    return m_addr->OperIsAddrMode() && m_addr->isContained();
 }
 
-bool GenTreeIndir::HasIndex()
+bool AddressModeInfo::HasBase() const
 {
-    return Index() != nullptr;
+    return GetBase() != nullptr;
 }
 
-GenTree* GenTreeIndir::Base()
+bool AddressModeInfo::HasIndex() const
 {
-    GenTree* addr = Addr();
+    return GetIndex() != nullptr;
+}
 
-    if (isIndirAddrMode())
+GenTree* AddressModeInfo::GetBase() const
+{
+    if (IsContainedAddressMode())
     {
-        GenTree* result = addr->AsAddrMode()->Base();
-        if (result != nullptr)
-        {
-            result = result->gtEffectiveVal();
-        }
+        GenTree* result = m_addr->AsAddrMode()->Base();
+        assert((result == nullptr) || (result->gtEffectiveVal() == result));
         return result;
     }
     else
     {
-        return addr; // TODO: why do we return 'addr' here, but we return 'nullptr' in the equivalent Index() case?
+        return m_addr; // TODO: why do we return 'addr' here, but we return 'nullptr' in the equivalent Index() case?
     }
 }
 
-GenTree* GenTreeIndir::Index()
+GenTree* AddressModeInfo::GetIndex() const
 {
-    if (isIndirAddrMode())
+    if (IsContainedAddressMode())
     {
-        GenTree* result = Addr()->AsAddrMode()->Index();
-        if (result != nullptr)
-        {
-            result = result->gtEffectiveVal();
-        }
+        GenTree* result = m_addr->AsAddrMode()->Index();
+        assert((result == nullptr) || (result->gtEffectiveVal() == result));
         return result;
     }
     else
@@ -16189,11 +16181,11 @@ GenTree* GenTreeIndir::Index()
     }
 }
 
-unsigned GenTreeIndir::Scale()
+unsigned AddressModeInfo::GetScale() const
 {
     if (HasIndex())
     {
-        return Addr()->AsAddrMode()->gtScale;
+        return m_addr->AsAddrMode()->gtScale;
     }
     else
     {
@@ -16201,19 +16193,19 @@ unsigned GenTreeIndir::Scale()
     }
 }
 
-ssize_t GenTreeIndir::Offset()
+ssize_t AddressModeInfo::GetOffset() const
 {
-    if (isIndirAddrMode())
+    if (IsContainedAddressMode())
     {
-        return Addr()->AsAddrMode()->Offset();
+        return m_addr->AsAddrMode()->Offset();
     }
-    else if (Addr()->gtOper == GT_CLS_VAR_ADDR)
+    else if (m_addr->OperIs(GT_CLS_VAR_ADDR))
     {
-        return static_cast<ssize_t>(reinterpret_cast<intptr_t>(Addr()->AsClsVar()->gtClsVarHnd));
+        return static_cast<ssize_t>(reinterpret_cast<intptr_t>(m_addr->AsClsVar()->gtClsVarHnd));
     }
-    else if (Addr()->IsCnsIntOrI() && Addr()->isContained())
+    else if (m_addr->IsCnsIntOrI() && m_addr->isContained())
     {
-        return Addr()->AsIntConCommon()->IconValue();
+        return m_addr->AsIntConCommon()->IconValue();
     }
     else
     {

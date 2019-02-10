@@ -112,10 +112,7 @@ void CodeGen::genHWIntrinsic(GenTreeHWIntrinsic* node)
                 if (node->OperIsMemoryLoad())
                 {
                     genConsumeAddress(op1);
-                    // Until we improve the handling of addressing modes in the emitter, we'll create a
-                    // temporary GT_IND to generate code with.
-                    GenTreeIndir load = indirForm(node->TypeGet(), op1);
-                    emit->emitInsLoadInd(ins, simdSize, node->GetRegNum(), &load);
+                    emit->emitInsLoad(ins, simdSize, node->GetRegNum(), op1);
                 }
                 else
                 {
@@ -166,16 +163,12 @@ void CodeGen::genHWIntrinsic(GenTreeHWIntrinsic* node)
                         ins  = HWIntrinsicInfo::lookupIns(extract->gtHWIntrinsicId, extract->gtSIMDBaseType);
                         ival = static_cast<int>(extract->gtGetOp2()->AsIntCon()->IconValue());
 
-                        GenTreeIndir indir = indirForm(TYP_SIMD16, op1);
-                        emit->emitIns_A_R_I(ins, EA_32BYTE, &indir, regData, ival);
+                        emit->emitIns_A_R_I(ins, EA_32BYTE, op1, regData, ival);
                     }
                     else
                     {
                         genConsumeReg(op2);
-                        // Until we improve the handling of addressing modes in the emitter, we'll create a
-                        // temporary GT_STORE_IND to generate code with.
-                        GenTreeStoreInd store = storeIndirForm(node->TypeGet(), op1, op2);
-                        emit->emitInsStoreInd(ins, simdSize, &store);
+                        emit->emitInsStore(ins, simdSize, op1, op2);
                     }
                     break;
                 }
@@ -447,13 +440,11 @@ void CodeGen::genHWIntrinsic_R_RM(
         }
         else if (rmOp->isIndir() || rmOp->OperIsHWIntrinsic())
         {
-            GenTree*      addr;
-            GenTreeIndir* memIndir = nullptr;
+            GenTree* addr;
 
             if (rmOp->isIndir())
             {
-                memIndir = rmOp->AsIndir();
-                addr     = memIndir->Addr();
+                addr = rmOp->AsIndir()->Addr();
             }
             else
             {
@@ -466,7 +457,7 @@ void CodeGen::genHWIntrinsic_R_RM(
             {
                 case GT_LCL_VAR_ADDR:
                 {
-                    varNum = addr->AsLclVarCommon()->GetLclNum();
+                    varNum = addr->AsLclVar()->GetLclNum();
                     offset = 0;
                     break;
                 }
@@ -479,15 +470,7 @@ void CodeGen::genHWIntrinsic_R_RM(
 
                 default:
                 {
-                    if (memIndir == nullptr)
-                    {
-                        // This is the HW intrinsic load case.
-                        // Until we improve the handling of addressing modes in the emitter, we'll create a
-                        // temporary GT_IND to generate code with.
-                        GenTreeIndir load = indirForm(rmOp->TypeGet(), addr);
-                        memIndir          = &load;
-                    }
-                    emit->emitIns_R_A(ins, attr, reg, memIndir);
+                    emit->emitIns_R_A(ins, attr, reg, addr);
                     return;
                 }
             }
@@ -632,13 +615,11 @@ void CodeGen::genHWIntrinsic_R_R_RM(
         }
         else if (op2->isIndir() || op2->OperIsHWIntrinsic())
         {
-            GenTree*      addr;
-            GenTreeIndir* memIndir = nullptr;
+            GenTree* addr;
 
             if (op2->isIndir())
             {
-                memIndir = op2->AsIndir();
-                addr     = memIndir->Addr();
+                addr = op2->AsIndir()->Addr();
             }
             else
             {
@@ -651,7 +632,7 @@ void CodeGen::genHWIntrinsic_R_R_RM(
             {
                 case GT_LCL_VAR_ADDR:
                 {
-                    varNum = addr->AsLclVarCommon()->GetLclNum();
+                    varNum = addr->AsLclVar()->GetLclNum();
                     offset = 0;
                     break;
                 }
@@ -664,15 +645,7 @@ void CodeGen::genHWIntrinsic_R_R_RM(
 
                 default:
                 {
-                    if (memIndir == nullptr)
-                    {
-                        // This is the HW intrinsic load case.
-                        // Until we improve the handling of addressing modes in the emitter, we'll create a
-                        // temporary GT_IND to generate code with.
-                        GenTreeIndir load = indirForm(op2->TypeGet(), addr);
-                        memIndir          = &load;
-                    }
-                    emit->emitIns_SIMD_R_R_A(ins, attr, targetReg, op1Reg, memIndir);
+                    emit->emitIns_SIMD_R_R_A(ins, attr, targetReg, op1Reg, addr);
                     return;
                 }
             }
@@ -798,13 +771,11 @@ void CodeGen::genHWIntrinsic_R_R_RM_I(GenTreeHWIntrinsic* node, instruction ins,
         }
         else if (op2->isIndir() || op2->OperIsHWIntrinsic())
         {
-            GenTree*      addr;
-            GenTreeIndir* memIndir = nullptr;
+            GenTree* addr;
 
             if (op2->isIndir())
             {
-                memIndir = op2->AsIndir();
-                addr     = memIndir->Addr();
+                addr = op2->AsIndir()->Addr();
             }
             else
             {
@@ -817,7 +788,7 @@ void CodeGen::genHWIntrinsic_R_R_RM_I(GenTreeHWIntrinsic* node, instruction ins,
             {
                 case GT_LCL_VAR_ADDR:
                 {
-                    varNum = addr->AsLclVarCommon()->GetLclNum();
+                    varNum = addr->AsLclVar()->GetLclNum();
                     offset = 0;
                     break;
                 }
@@ -831,15 +802,7 @@ void CodeGen::genHWIntrinsic_R_R_RM_I(GenTreeHWIntrinsic* node, instruction ins,
 
                 default:
                 {
-                    if (memIndir == nullptr)
-                    {
-                        // This is the HW intrinsic load case.
-                        // Until we improve the handling of addressing modes in the emitter, we'll create a
-                        // temporary GT_IND to generate code with.
-                        GenTreeIndir load = indirForm(op2->TypeGet(), addr);
-                        memIndir          = &load;
-                    }
-                    emit->emitIns_SIMD_R_R_A_I(ins, simdSize, targetReg, op1Reg, memIndir, ival);
+                    emit->emitIns_SIMD_R_R_A_I(ins, simdSize, targetReg, op1Reg, addr, ival);
                     return;
                 }
             }
@@ -964,13 +927,11 @@ void CodeGen::genHWIntrinsic_R_R_RM_R(GenTreeHWIntrinsic* node, instruction ins)
         }
         else if (op2->isIndir() || op2->OperIsHWIntrinsic())
         {
-            GenTree*      addr;
-            GenTreeIndir* memIndir = nullptr;
+            GenTree* addr;
 
             if (op2->isIndir())
             {
-                memIndir = op2->AsIndir();
-                addr     = memIndir->Addr();
+                addr = op2->AsIndir()->Addr();
             }
             else
             {
@@ -983,7 +944,7 @@ void CodeGen::genHWIntrinsic_R_R_RM_R(GenTreeHWIntrinsic* node, instruction ins)
             {
                 case GT_LCL_VAR_ADDR:
                 {
-                    varNum = addr->AsLclVarCommon()->GetLclNum();
+                    varNum = addr->AsLclVar()->GetLclNum();
                     offset = 0;
                     break;
                 }
@@ -997,15 +958,7 @@ void CodeGen::genHWIntrinsic_R_R_RM_R(GenTreeHWIntrinsic* node, instruction ins)
 
                 default:
                 {
-                    if (memIndir == nullptr)
-                    {
-                        // This is the HW intrinsic load case.
-                        // Until we improve the handling of addressing modes in the emitter, we'll create a
-                        // temporary GT_IND to generate code with.
-                        GenTreeIndir load = indirForm(op2->TypeGet(), addr);
-                        memIndir          = &load;
-                    }
-                    emit->emitIns_SIMD_R_R_A_R(ins, simdSize, targetReg, op1Reg, op3Reg, memIndir);
+                    emit->emitIns_SIMD_R_R_A_R(ins, simdSize, targetReg, op1Reg, op3Reg, addr);
                     return;
                 }
             }
@@ -1093,12 +1046,11 @@ void CodeGen::genHWIntrinsic_R_R_R_RM(
         }
         else if (op3->isIndir() || op3->OperIsHWIntrinsic())
         {
-            GenTree*      addr;
-            GenTreeIndir* memIndir = nullptr;
+            GenTree* addr;
+
             if (op3->isIndir())
             {
-                memIndir = op3->AsIndir();
-                addr     = memIndir->Addr();
+                addr = op3->AsIndir()->Addr();
             }
             else
             {
@@ -1111,7 +1063,7 @@ void CodeGen::genHWIntrinsic_R_R_R_RM(
             {
                 case GT_LCL_VAR_ADDR:
                 {
-                    varNum = addr->AsLclVarCommon()->GetLclNum();
+                    varNum = addr->AsLclVar()->GetLclNum();
                     offset = 0;
                     break;
                 }
@@ -1124,15 +1076,7 @@ void CodeGen::genHWIntrinsic_R_R_R_RM(
 
                 default:
                 {
-                    if (memIndir == nullptr)
-                    {
-                        // This is the HW intrinsic load case.
-                        // Until we improve the handling of addressing modes in the emitter, we'll create a
-                        // temporary GT_IND to generate code with.
-                        GenTreeIndir load = indirForm(op3->TypeGet(), addr);
-                        memIndir          = &load;
-                    }
-                    emit->emitIns_SIMD_R_R_R_A(ins, attr, targetReg, op1Reg, op2Reg, memIndir);
+                    emit->emitIns_SIMD_R_R_R_A(ins, attr, targetReg, op1Reg, op2Reg, addr);
                     return;
                 }
             }
@@ -1572,9 +1516,8 @@ void CodeGen::genSSE2Intrinsic(GenTreeHWIntrinsic* node)
             assert(op1 != nullptr);
             assert(op2 != nullptr);
 
-            instruction     ins   = HWIntrinsicInfo::lookupIns(intrinsicId, baseType);
-            GenTreeStoreInd store = storeIndirForm(node->TypeGet(), op1, op2);
-            emit->emitInsStoreInd(ins, emitTypeSize(baseType), &store);
+            instruction ins = HWIntrinsicInfo::lookupIns(intrinsicId, baseType);
+            emit->emitInsStore(ins, emitTypeSize(baseType), op1, op2);
             break;
         }
 
@@ -1621,10 +1564,7 @@ void CodeGen::genSSE41Intrinsic(GenTreeHWIntrinsic* node)
 
             if (!varTypeIsSIMD(op1->gtType))
             {
-                // Until we improve the handling of addressing modes in the emitter, we'll create a
-                // temporary GT_IND to generate code with.
-                GenTreeIndir load = indirForm(node->TypeGet(), op1);
-                emit->emitInsLoadInd(ins, emitTypeSize(TYP_SIMD16), node->GetRegNum(), &load);
+                emit->emitInsLoad(ins, emitTypeSize(TYP_SIMD16), node->GetRegNum(), op1);
             }
             else
             {
@@ -1786,10 +1726,7 @@ void CodeGen::genAvxOrAvx2Intrinsic(GenTreeHWIntrinsic* node)
 
             if (!varTypeIsSIMD(op1->gtType))
             {
-                // Until we improve the handling of addressing modes in the emitter, we'll create a
-                // temporary GT_IND to generate code with.
-                GenTreeIndir load = indirForm(node->TypeGet(), op1);
-                emit->emitInsLoadInd(ins, emitTypeSize(TYP_SIMD32), node->GetRegNum(), &load);
+                emit->emitInsLoad(ins, emitTypeSize(TYP_SIMD32), node->GetRegNum(), op1);
             }
             else
             {
