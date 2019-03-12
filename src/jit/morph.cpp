@@ -9090,7 +9090,7 @@ GenTree* Compiler::fgMorphOneAsgBlockOp(GenTree* tree)
         }
     }
 
-    if ((destVarDsc != nullptr) && varTypeIsStruct(destLclVarTree) && destVarDsc->lvPromoted)
+    if ((destVarDsc != nullptr) && (destLclVarTree->TypeGet() == TYP_STRUCT) && destVarDsc->lvPromoted)
     {
         // Let fgMorphCopyBlock handle it.
         return nullptr;
@@ -9109,7 +9109,7 @@ GenTree* Compiler::fgMorphOneAsgBlockOp(GenTree* tree)
         {
             srcVarDsc = &(lvaTable[srcLclVarTree->AsLclVarCommon()->gtLclNum]);
         }
-        if ((srcVarDsc != nullptr) && varTypeIsStruct(srcLclVarTree) && srcVarDsc->lvPromoted)
+        if ((srcVarDsc != nullptr) && (srcLclVarTree->TypeGet() == TYP_STRUCT) && srcVarDsc->lvPromoted)
         {
             // Let fgMorphCopyBlock handle it.
             return nullptr;
@@ -9149,7 +9149,7 @@ GenTree* Compiler::fgMorphOneAsgBlockOp(GenTree* tree)
             // holes, whose contents could be meaningful in unsafe code.  If we decide that's a valid
             // concern, then we could compromise, and say that address-exposed + fields do not completely cover the
             // memory of the struct prevent field-wise assignments.  Same situation exists for the "src" decision.
-            if (varTypeIsStruct(destLclVarTree) && (destVarDsc->lvPromoted || destVarDsc->lvIsSIMDType()))
+            if ((destLclVarTree->TypeGet() == TYP_STRUCT) && (destVarDsc->lvPromoted || destVarDsc->lvIsSIMDType()))
             {
                 // Let fgMorphInitBlock handle it.  (Since we'll need to do field-var-wise assignments.)
                 return nullptr;
