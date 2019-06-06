@@ -10197,6 +10197,7 @@ GenTree* Compiler::fgMorphCopyBlock(GenTree* tree)
         unsigned             destLclNum        = BAD_VAR_NUM;
         LclVarDsc*           destLclVar        = nullptr;
         FieldSeqNode*        destFldSeq        = nullptr;
+        unsigned             destFldOfs        = 0;
         bool                 destDoFldAsg      = false;
         GenTree*             destAddr          = nullptr;
         GenTree*             srcAddr           = nullptr;
@@ -10236,6 +10237,7 @@ GenTree* Compiler::fgMorphCopyBlock(GenTree* tree)
                 blockWidth = genTypeSize(dest->TypeGet());
                 destAddr   = gtNewOperNode(GT_ADDR, TYP_BYREF, dest);
                 destFldSeq = dest->AsLclFld()->gtFieldSeq;
+                destFldOfs = dest->AsLclFld()->gtLclOffs;
             }
         }
         else
@@ -10266,7 +10268,7 @@ GenTree* Compiler::fgMorphCopyBlock(GenTree* tree)
             if (destAddr != nullptr)
             {
                 noway_assert(destAddr->TypeGet() == TYP_BYREF || destAddr->TypeGet() == TYP_I_IMPL);
-                if (destAddr->IsLocalAddrExpr(this, &lclVarTree, &destFldSeq))
+                if (destAddr->IsLocalAddrExpr(this, &lclVarTree, &destFldSeq, &destFldOfs))
                 {
                     destOnStack = true;
                     destLclNum  = lclVarTree->gtLclNum;
@@ -10307,6 +10309,7 @@ GenTree* Compiler::fgMorphCopyBlock(GenTree* tree)
         }
 
         FieldSeqNode* srcFldSeq   = nullptr;
+        unsigned      srcFldOfs   = 0;
         unsigned      srcLclNum   = BAD_VAR_NUM;
         LclVarDsc*    srcLclVar   = nullptr;
         bool          srcDoFldAsg = false;
@@ -10318,11 +10321,12 @@ GenTree* Compiler::fgMorphCopyBlock(GenTree* tree)
             if (rhs->OperGet() == GT_LCL_FLD)
             {
                 srcFldSeq = rhs->AsLclFld()->gtFieldSeq;
+                srcFldOfs = rhs->AsLclFld()->gtLclOffs;
             }
         }
         else if (rhs->OperIsIndir())
         {
-            if (rhs->gtOp.gtOp1->IsLocalAddrExpr(this, &srcLclVarTree, &srcFldSeq))
+            if (rhs->gtOp.gtOp1->IsLocalAddrExpr(this, &srcLclVarTree, &srcFldSeq, &srcFldOfs))
             {
                 srcLclNum = srcLclVarTree->gtLclNum;
             }
@@ -10825,8 +10829,15 @@ GenTree* Compiler::fgMorphCopyBlock(GenTree* tree)
                     {
                         dest = gtNewLclFldNode(destLclNum, lvaTable[fieldLclNum].TypeGet(),
                                                lvaTable[fieldLclNum].lvFldOffset);
-                        dest->AsLclFld()->gtFieldSeq =
-                            (destFldSeq == nullptr) ? curFieldSeq : GetFieldSeqStore()->Append(destFldSeq, curFieldSeq);
+                        if (destFldSeq == nullptr)
+                        {
+                            dest->AsLclFld()->gtFieldSeq = curFieldSeq;
+                        }
+                        else
+                        {
+                            dest->AsLclFld()->gtFieldSeq = GetFieldSeqStore()->Append(destFldSeq, curFieldSeq);
+                            dest->AsLclFld()->gtLclOffs += destFldOfs;
+                        }
                         dest->gtFlags |= GTF_DONT_CSE | GTF_VAR_DEF | GTF_VAR_USEASG;
                     }
                     else
@@ -10904,8 +10915,15 @@ GenTree* Compiler::fgMorphCopyBlock(GenTree* tree)
                     {
                         src = gtNewLclFldNode(srcLclNum, lvaGetDesc(fieldLclNum)->lvType,
                                               lvaGetDesc(fieldLclNum)->lvFldOffset);
-                        src->AsLclFld()->gtFieldSeq =
-                            srcFldSeq == nullptr ? curFieldSeq : GetFieldSeqStore()->Append(srcFldSeq, curFieldSeq);
+                        if (srcFldSeq == nullptr)
+                        {
+                            src->AsLclFld()->gtFieldSeq = curFieldSeq;
+                        }
+                        else
+                        {
+                            src->AsLclFld()->gtFieldSeq = GetFieldSeqStore()->Append(srcFldSeq, curFieldSeq);
+                            src->AsLclFld()->gtLclOffs += srcFldOfs;
+                        }
                         src->gtFlags |= GTF_DONT_CSE;
                     }
                     else

@@ -15649,7 +15649,10 @@ GenTreeLclVarCommon* GenTree::IsLocalAddrExpr()
     return nullptr;
 }
 
-bool GenTree::IsLocalAddrExpr(Compiler* comp, GenTreeLclVarCommon** pLclVarTree, FieldSeqNode** pFldSeq)
+bool GenTree::IsLocalAddrExpr(Compiler*             comp,
+                              GenTreeLclVarCommon** pLclVarTree,
+                              FieldSeqNode**        pFldSeq,
+                              unsigned*             pFldOfs)
 {
     if (OperGet() == GT_ADDR)
     {
@@ -15662,6 +15665,10 @@ bool GenTree::IsLocalAddrExpr(Compiler* comp, GenTreeLclVarCommon** pLclVarTree,
             {
                 // Otherwise, prepend this field to whatever we've already accumulated outside in.
                 *pFldSeq = comp->GetFieldSeqStore()->Append(addrArg->AsLclFld()->gtFieldSeq, *pFldSeq);
+                if (pFldOfs != nullptr)
+                {
+                    *pFldOfs += addrArg->AsLclFld()->gtLclOffs;
+                }
             }
             return true;
         }
@@ -15676,6 +15683,10 @@ bool GenTree::IsLocalAddrExpr(Compiler* comp, GenTreeLclVarCommon** pLclVarTree,
         if (this->OperGet() == GT_LCL_FLD_ADDR)
         {
             *pFldSeq = comp->GetFieldSeqStore()->Append(this->AsLclFld()->gtFieldSeq, *pFldSeq);
+            if (pFldOfs != nullptr)
+            {
+                *pFldOfs += AsLclFld()->gtLclOffs;
+            }
         }
         return true;
     }
@@ -15689,6 +15700,10 @@ bool GenTree::IsLocalAddrExpr(Compiler* comp, GenTreeLclVarCommon** pLclVarTree,
             }
             // Otherwise, prepend this field to whatever we've already accumulated outside in.
             *pFldSeq = comp->GetFieldSeqStore()->Append(gtOp.gtOp1->AsIntCon()->gtFieldSeq, *pFldSeq);
+            if (pFldOfs != nullptr)
+            {
+                *pFldOfs += (unsigned)AsOp()->gtGetOp1()->AsIntCon()->IconValue();
+            }
             return gtOp.gtOp2->IsLocalAddrExpr(comp, pLclVarTree, pFldSeq);
         }
         else if (gtOp.gtOp2->OperGet() == GT_CNS_INT)
@@ -15699,6 +15714,10 @@ bool GenTree::IsLocalAddrExpr(Compiler* comp, GenTreeLclVarCommon** pLclVarTree,
             }
             // Otherwise, prepend this field to whatever we've already accumulated outside in.
             *pFldSeq = comp->GetFieldSeqStore()->Append(gtOp.gtOp2->AsIntCon()->gtFieldSeq, *pFldSeq);
+            if (pFldOfs != nullptr)
+            {
+                *pFldOfs += (unsigned)AsOp()->gtGetOp2()->AsIntCon()->IconValue();
+            }
             return gtOp.gtOp1->IsLocalAddrExpr(comp, pLclVarTree, pFldSeq);
         }
     }
