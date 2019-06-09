@@ -17993,16 +17993,18 @@ class LocalAddressVisitor final : public GenTreeVisitor<LocalAddressVisitor>
     //
     class Value
     {
-        GenTree* m_node;
-        unsigned m_lclNum;
-        unsigned m_offset;
-        bool     m_address;
+        GenTree*      m_node;
+        FieldSeqNode* m_fieldSeq;
+        unsigned      m_lclNum;
+        unsigned      m_offset;
+        bool          m_address;
         INDEBUG(bool m_consumed;)
 
     public:
         // Produce an unknown value associated with the specified node.
         Value(GenTree* node)
             : m_node(node)
+            , m_fieldSeq(nullptr)
             , m_lclNum(BAD_VAR_NUM)
             , m_offset(0)
             , m_address(false)
@@ -18048,6 +18050,12 @@ class LocalAddressVisitor final : public GenTreeVisitor<LocalAddressVisitor>
             return m_offset;
         }
 
+        // Get the location's field sequence.
+        FieldSeqNode* FieldSeq() const
+        {
+            return m_fieldSeq;
+        }
+
         //------------------------------------------------------------------------
         // Location: Produce a location value.
         //
@@ -18058,12 +18066,24 @@ class LocalAddressVisitor final : public GenTreeVisitor<LocalAddressVisitor>
         // Notes:
         //   - (lclnum, offset) => LOCATION(lclNum, offset)
         //
-        void Location(unsigned lclNum, unsigned offset = 0)
+        void Location(GenTreeLclVar* lclVar)
         {
             assert(!IsLocation() && !IsAddress());
 
-            m_lclNum = lclNum;
-            m_offset = offset;
+            m_lclNum = lclVar->GetLclNum();
+            assert(m_offset == 0);
+            assert(m_fieldSeq == nullptr);
+        }
+
+        void Location(GenTreeLclFld* lclFld)
+        {
+            assert(!IsLocation() && !IsAddress());
+
+            m_lclNum   = lclFld->GetLclNum();
+            m_offset   = lclFld->GetLclOfsset();
+            m_fieldSeq = lclFld->GetFieldSeq();
+
+            assert(m_fieldSeq != nullptr);
         }
 
         //------------------------------------------------------------------------
@@ -18084,9 +18104,10 @@ class LocalAddressVisitor final : public GenTreeVisitor<LocalAddressVisitor>
 
             if (val.IsLocation())
             {
-                m_address = true;
-                m_lclNum  = val.m_lclNum;
-                m_offset  = val.m_offset;
+                m_address  = true;
+                m_lclNum   = val.m_lclNum;
+                m_offset   = val.m_offset;
+                m_fieldSeq = val.m_fieldSeq;
             }
 
             INDEBUG(val.Consume();)
@@ -18111,7 +18132,7 @@ class LocalAddressVisitor final : public GenTreeVisitor<LocalAddressVisitor>
         //     if the offset overflows then location is not representable, must escape
         //   - UNKNOWN => UNKNOWN
         //
-        bool Field(Value& val, unsigned offset)
+        bool Field(Value& val, GenTreeField* field, FieldSeqStore* fieldSeqStore)
         {
             assert(!IsLocation() && !IsAddress());
 
@@ -18122,7 +18143,8 @@ class LocalAddressVisitor final : public GenTreeVisitor<LocalAddressVisitor>
 
             if (val.IsAddress())
             {
-                ClrSafeInt<unsigned> newOffset = ClrSafeInt<unsigned>(val.m_offset) + ClrSafeInt<unsigned>(offset);
+                ClrSafeInt<unsigned> newOffset =
+                    ClrSafeInt<unsigned>(val.m_offset) + ClrSafeInt<unsigned>(field->gtFldOffset);
 
                 if (newOffset.IsOverflow())
                 {
@@ -18131,6 +18153,15 @@ class LocalAddressVisitor final : public GenTreeVisitor<LocalAddressVisitor>
 
                 m_lclNum = val.m_lclNum;
                 m_offset = newOffset.Value();
+            }
+
+            if (field->gtFldMayOverlap || (val.m_fieldSeq == FieldSeqStore::NotAField()))
+            {
+                m_fieldSeq = FieldSeqStore::NotAField();
+            }
+            else
+            {
+                m_fieldSeq = fieldSeqStore->Append(val.m_fieldSeq, fieldSeqStore->CreateSingleton(field->gtFldHnd));
             }
 
             INDEBUG(val.Consume();)
@@ -18164,8 +18195,9 @@ class LocalAddressVisitor final : public GenTreeVisitor<LocalAddressVisitor>
 
             if (val.IsAddress())
             {
-                m_lclNum = val.m_lclNum;
-                m_offset = val.m_offset;
+                m_lclNum   = val.m_lclNum;
+                m_offset   = val.m_offset;
+                m_fieldSeq = val.m_fieldSeq;
             }
 
             INDEBUG(val.Consume();)
@@ -18304,13 +18336,13 @@ public:
             case GT_LCL_VAR:
                 assert(TopValue(0).Node() == node);
 
-                TopValue(0).Location(node->AsLclVar()->GetLclNum());
+                TopValue(0).Location(node->AsLclVar());
                 break;
 
             case GT_LCL_FLD:
                 assert(TopValue(0).Node() == node);
 
-                TopValue(0).Location(node->AsLclFld()->GetLclNum(), node->AsLclFld()->gtLclOffs);
+                TopValue(0).Location(node->AsLclFld());
                 break;
 
             case GT_ADDR:
@@ -18327,7 +18359,7 @@ public:
                     assert(TopValue(1).Node() == node);
                     assert(TopValue(0).Node() == node->AsField()->gtFldObj);
 
-                    if (!TopValue(1).Field(TopValue(0), node->AsField()->gtFldOffset))
+                    if (!TopValue(1).Field(TopValue(0), node->AsField(), m_compiler->GetFieldSeqStore()))
                     {
                         // Either the address comes from a location value (e.g. FIELD(IND(...)))
                         // or the field offset has overflowed.
@@ -18563,6 +18595,43 @@ private:
             if (isWide)
             {
                 m_compiler->lvaSetVarAddrExposed(varDsc->lvIsStructField ? varDsc->lvParentLcl : val.LclNum());
+            }
+            else
+            {
+                if ((val.FieldSeq() != nullptr) && (val.Offset() < 65536) &&
+                    // LCL_FLDs can be used for non-struct variables as well. However, in that case we don't have
+                    // a real field access but rather we're reinterpreting the variable as a different type, as in
+                    // *((float*)&intVar). Ideally, such cases should be handled in a different manner (GT_BITCAST,
+                    // bit shifting and masking) so as not to make the variable not enregistrable. Leave such cases
+                    // to morph for now.
+                    (varDsc->TypeGet() == TYP_STRUCT) &&
+                    // Dealing with implicit byref parameters is problematic now.
+                    !varDsc->lvIsImplicitByRef &&
+                    // For now just generate LCL_FLDs early. We could do promotion as well in the future.
+                    !varDsc->lvPromoted && !varDsc->lvIsStructField)
+                {
+                    if (node->OperIs(GT_OBJ, GT_BLK))
+                    {
+                        GenTree* addr = node->AsBlk()->Addr();
+                        // The address should always be a GT_ADDR node (applied to a GT_FIELD or GT_LCL_VAR).
+                        // Currently we don't track field sequences through pointer operations, that can be
+                        // added in the future.
+                        assert(addr->OperIs(GT_ADDR));
+                        node = addr->AsUnOp()->gtGetOp1();
+                    }
+
+                    JITDUMP("Changing local indirection tree to GT_LCL_FLD\n");
+
+                    m_compiler->lvaSetVarDoNotEnregister(val.LclNum() DEBUGARG(Compiler::DNER_LocalField));
+
+                    node->ChangeOper(GT_LCL_FLD);
+                    node->gtFlags &= ~GTF_ALL_EFFECT;
+                    node->AsLclFld()->SetLclNum(val.LclNum());
+                    node->AsLclFld()->SetLclOffset(val.Offset());
+                    node->AsLclFld()->SetFieldSeq(val.FieldSeq());
+
+                    INDEBUG(m_stmtModified = true);
+                }
             }
         }
 

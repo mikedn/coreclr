@@ -2770,6 +2770,29 @@ struct GenTreeLclFld : public GenTreeLclVarCommon
     {
         assert(sizeof(*this) <= s_gtNodeSizes[GT_LCL_FLD]);
     }
+
+    unsigned GetLclOfsset() const
+    {
+        return gtLclOffs;
+    }
+
+    void SetLclOffset(unsigned offset)
+    {
+        assert(offset < 65536);
+        gtLclOffs = offset;
+    }
+
+    FieldSeqNode* GetFieldSeq() const
+    {
+        return gtFieldSeq;
+    }
+
+    void SetFieldSeq(FieldSeqNode* fieldSeq)
+    {
+        assert(fieldSeq != nullptr);
+        gtFieldSeq = fieldSeq;
+    }
+
 #if DEBUGGABLE_GENTREE
     GenTreeLclFld() : GenTreeLclVarCommon()
     {
