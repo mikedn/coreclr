@@ -2692,14 +2692,7 @@ int LinearScan::BuildHWIntrinsic(GenTreeHWIntrinsic* intrinsicTree)
         {
             assert((numArgs > 0) && (numArgs < 4));
 
-            if (intrinsicTree->OperIsMemoryLoadOrStore())
-            {
-                srcCount += BuildAddrUses(op1);
-            }
-            else
-            {
-                srcCount += BuildOperandUses(op1);
-            }
+            srcCount += BuildOperandUses(op1);
 
             if (op2 != nullptr)
             {

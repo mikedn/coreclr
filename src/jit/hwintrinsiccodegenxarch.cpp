@@ -85,6 +85,8 @@ void CodeGen::genHWIntrinsic(GenTreeHWIntrinsic* node)
     int                 ival        = HWIntrinsicInfo::lookupIval(intrinsicId);
     int                 numArgs     = HWIntrinsicInfo::lookupNumArgs(node);
 
+    genConsumeHWIntrinsicOperands(node);
+
     assert(HWIntrinsicInfo::RequiresCodegen(intrinsicId));
 
     if (genIsTableDrivenHWIntrinsic(intrinsicId, category))
@@ -111,7 +113,6 @@ void CodeGen::genHWIntrinsic(GenTreeHWIntrinsic* node)
             {
                 if (node->OperIsMemoryLoad())
                 {
-                    genConsumeAddress(op1);
                     // Until we improve the handling of addressing modes in the emitter, we'll create a
                     // temporary GT_IND to generate code with.
                     GenTreeIndir load = indirForm(node->TypeGet(), op1);
@@ -119,7 +120,6 @@ void CodeGen::genHWIntrinsic(GenTreeHWIntrinsic* node)
                 }
                 else
                 {
-                    genConsumeRegs(op1);
                     op1Reg = op1->gtRegNum;
 
                     if ((category == HW_Category_SIMDScalar) && HWIntrinsicInfo::CopiesUpperBits(intrinsicId))
@@ -143,16 +143,12 @@ void CodeGen::genHWIntrinsic(GenTreeHWIntrinsic* node)
             {
                 if (category == HW_Category_MemoryStore)
                 {
-                    genConsumeAddress(op1);
-                    genConsumeReg(op2);
                     // Until we improve the handling of addressing modes in the emitter, we'll create a
                     // temporary GT_STORE_IND to generate code with.
                     GenTreeStoreInd store = storeIndirForm(node->TypeGet(), op1, op2);
                     emit->emitInsStoreInd(ins, simdSize, &store);
                     break;
                 }
-                genConsumeRegs(op1);
-                genConsumeRegs(op2);
 
                 op1Reg = op1->gtRegNum;
                 op2Reg = op2->gtRegNum;
@@ -235,17 +231,14 @@ void CodeGen::genHWIntrinsic(GenTreeHWIntrinsic* node)
             {
                 GenTreeArgList* argList = op1->AsArgList();
                 op1                     = argList->Current();
-                genConsumeRegs(op1);
                 op1Reg = op1->gtRegNum;
 
                 argList = argList->Rest();
                 op2     = argList->Current();
-                genConsumeRegs(op2);
                 op2Reg = op2->gtRegNum;
 
                 argList      = argList->Rest();
                 GenTree* op3 = argList->Current();
-                genConsumeRegs(op3);
                 regNumber op3Reg = op3->gtRegNum;
 
                 if (HWIntrinsicInfo::isImmOp(intrinsicId, op3))
@@ -1254,7 +1247,6 @@ void CodeGen::genBaseIntrinsic(GenTreeHWIntrinsic* node)
 
     GenTree* op1 = node->gtGetOp1();
 
-    genConsumeHWIntrinsicOperands(node);
     regNumber op1Reg = (op1 == nullptr) ? REG_NA : op1->gtRegNum;
 
     assert(node->gtGetOp2() == nullptr);
@@ -1385,8 +1377,6 @@ void CodeGen::genSSEIntrinsic(GenTreeHWIntrinsic* node)
     regNumber op3Reg = REG_NA;
     regNumber op4Reg = REG_NA;
     emitter*  emit   = getEmitter();
-
-    genConsumeHWIntrinsicOperands(node);
 
     switch (intrinsicId)
     {
@@ -1545,8 +1535,6 @@ void CodeGen::genSSE2Intrinsic(GenTreeHWIntrinsic* node)
     regNumber      op1Reg      = REG_NA;
     regNumber      op2Reg      = REG_NA;
     emitter*       emit        = getEmitter();
-
-    genConsumeHWIntrinsicOperands(node);
 
     switch (intrinsicId)
     {
@@ -1760,8 +1748,6 @@ void CodeGen::genSSE41Intrinsic(GenTreeHWIntrinsic* node)
     regNumber op4Reg = REG_NA;
     emitter*  emit   = getEmitter();
 
-    genConsumeHWIntrinsicOperands(node);
-
     switch (intrinsicId)
     {
         case NI_SSE41_ConvertToVector128Int16:
@@ -1876,7 +1862,6 @@ void CodeGen::genSSE42Intrinsic(GenTreeHWIntrinsic* node)
     var_types      targetType  = node->TypeGet();
     emitter*       emit        = getEmitter();
 
-    genConsumeHWIntrinsicOperands(node);
     regNumber op1Reg = op1->gtRegNum;
 
     assert(targetReg != REG_NA);
@@ -1945,8 +1930,6 @@ void CodeGen::genAvxOrAvx2Intrinsic(GenTreeHWIntrinsic* node)
     regNumber      op2Reg      = REG_NA;
     regNumber      targetReg   = node->gtRegNum;
     emitter*       emit        = getEmitter();
-
-    genConsumeHWIntrinsicOperands(node);
 
     switch (intrinsicId)
     {
@@ -2150,8 +2133,6 @@ void CodeGen::genBMI1OrBMI2Intrinsic(GenTreeHWIntrinsic* node)
     assert(targetReg != REG_NA);
     assert(op1 != nullptr);
 
-    genConsumeHWIntrinsicOperands(node);
-
     switch (intrinsicId)
     {
         case NI_BMI1_AndNot:
@@ -2279,7 +2260,6 @@ void CodeGen::genFMAIntrinsic(GenTreeHWIntrinsic* node)
 
     assert(HWIntrinsicInfo::lookupNumArgs(node) == 3);
 
-    genConsumeHWIntrinsicOperands(node);
     GenTreeArgList* argList = op1->AsArgList();
     op1                     = argList->Current();
 
@@ -2365,7 +2345,6 @@ void CodeGen::genLZCNTIntrinsic(GenTreeHWIntrinsic* node)
     assert(node->gtHWIntrinsicId == NI_LZCNT_LeadingZeroCount ||
            node->gtHWIntrinsicId == NI_LZCNT_X64_LeadingZeroCount);
 
-    genConsumeOperands(node);
     genXCNTIntrinsic(node, INS_lzcnt);
     genProduceReg(node);
 }
@@ -2391,7 +2370,6 @@ void CodeGen::genPOPCNTIntrinsic(GenTreeHWIntrinsic* node)
 {
     assert(node->gtHWIntrinsicId == NI_POPCNT_PopCount || node->gtHWIntrinsicId == NI_POPCNT_X64_PopCount);
 
-    genConsumeOperands(node);
     genXCNTIntrinsic(node, INS_popcnt);
     genProduceReg(node);
 }
