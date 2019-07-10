@@ -827,7 +827,17 @@ protected:
 
     struct GenIntCastDesc
     {
-        enum CheckKind
+        enum LoadKind : unsigned
+        {
+            LOAD,
+            LOAD_ZERO_EXTEND_SMALL_INT,
+            LOAD_SIGN_EXTEND_SMALL_INT,
+#ifdef _TARGET_64BIT_
+            LOAD_SIGN_EXTEND_INT
+#endif
+        };
+
+        enum CheckKind : unsigned
         {
             CHECK_NONE,
             CHECK_SMALL_INT_RANGE,
@@ -839,7 +849,7 @@ protected:
 #endif
         };
 
-        enum ExtendKind
+        enum ExtendKind : unsigned
         {
             COPY,
             ZERO_EXTEND_SMALL_INT,
@@ -851,6 +861,8 @@ protected:
         };
 
     private:
+        LoadKind   m_loadKind;
+        unsigned   m_loadSrcSize;
         CheckKind  m_checkKind;
         unsigned   m_checkSrcSize;
         int        m_checkSmallIntMin;
@@ -860,6 +872,16 @@ protected:
 
     public:
         GenIntCastDesc(GenTreeCast* cast);
+
+        LoadKind LoadKind() const
+        {
+            return m_loadKind;
+        }
+
+        unsigned LoadSrcSize() const
+        {
+            return m_loadSrcSize;
+        }
 
         CheckKind CheckKind() const
         {
