@@ -41,29 +41,317 @@ struct CnsVal
 
 UNATIVE_OFFSET emitInsSizeAM(instrDesc* id, code_t code);
 
-template <bool generateCode>
-BYTE* emitOutputAM(BYTE* dst, instrDesc* id, code_t code, CnsVal* addc = nullptr);
-template <bool generateCode>
-BYTE* emitOutputSV(BYTE* dst, instrDesc* id, code_t code, CnsVal* addc = nullptr);
-template <bool generateCode>
-BYTE* emitOutputCV(BYTE* dst, instrDesc* id, code_t code, CnsVal* addc = nullptr);
+private:
+class SizeOutput
+{
+    emitter*      m_emitter;
+    unsigned char m_size;
 
-template <bool generateCode>
-BYTE* emitOutputR(BYTE* dst, instrDesc* id);
-template <bool generateCode>
-BYTE* emitOutputRI(BYTE* dst, instrDesc* id);
-template <bool generateCode>
-BYTE* emitOutputRR(BYTE* dst, instrDesc* id);
-template <bool generateCode>
-BYTE* emitOutputIV(BYTE* dst, instrDesc* id);
+    void AddSize(size_t size)
+    {
+        assert(m_size + size <= 15);
+        m_size += static_cast<unsigned char>(size);
+    }
 
-template <bool generateCode>
-BYTE* emitOutputRRR(BYTE* dst, instrDesc* id);
+public:
+    SizeOutput(emitter* emitter) : m_emitter(emitter), m_size(0)
+    {
+    }
 
-template <bool generateCode>
-BYTE* emitOutputLJ(BYTE* dst, instrDesc* id);
+    bool IsEncoding()
+    {
+        return false;
+    }
 
-unsigned emitOutputRexOrVexPrefixIfNeeded(instruction ins, BYTE* dst, code_t& code);
+    BYTE* GetDestination()
+    {
+        return nullptr;
+    }
+
+    unsigned char GetCurrentInstructionSize()
+    {
+        return m_size;
+    }
+
+    void OutputByte(ssize_t val)
+    {
+        AddSize(1);
+    }
+    void OutputWord(ssize_t val)
+    {
+        AddSize(2);
+    }
+    void OutputLong(ssize_t val)
+    {
+        AddSize(4);
+    }
+    void OutputSizeT(ssize_t val)
+    {
+        AddSize(sizeof(val));
+    }
+
+    void OutputNOP(size_t size)
+    {
+        AddSize(size);
+    }
+
+    void OutputSkip(size_t size)
+    {
+        AddSize(size);
+    }
+
+    void GCregLiveUpd(GCtype gcType, regNumber reg)
+    {
+    }
+
+    void GCregDeadUpd(regNumber reg)
+    {
+    }
+
+    void UpdateLiveGCvars(VARSET_VALARG_TP vars)
+    {
+    }
+
+    void UpdateLiveGCvarsBeforeCall(VARSET_VALARG_TP vars)
+    {
+    }
+
+    void UpdateLiveGCregs(GCtype gcType, regMaskTP regs)
+    {
+    }
+
+    void GCregDeadUpdMask(regMaskTP regs)
+    {
+    }
+
+    void GCregLiveSet(GCtype gcType, regMaskTP mask, bool isThis)
+    {
+    }
+
+    void GCvarLiveUpd(int offs, int varNum, GCtype gcType)
+    {
+    }
+
+    void RecordRelocation(void* target, uint16_t relocType, uint16_t slotNum = 0, int32_t addlDelta = 0)
+    {
+    }
+
+    void RecordRelocation(size_t size, void* target, uint16_t relocType, uint16_t slotNum = 0, int32_t addlDelta = 0)
+    {
+    }
+
+    void RecordCallSite(CORINFO_SIG_INFO* callSig, CORINFO_METHOD_HANDLE methodHandle)
+    {
+    }
+
+    void RecordGCCall(unsigned char callInstrSize)
+    {
+    }
+
+    void StackPop(bool isCall, unsigned char callInstrSize, unsigned count = 1)
+    {
+    }
+
+    void StackKillArgs(unsigned count, unsigned char callInstrSize)
+    {
+    }
+
+    void Align()
+    {
+    }
+
+    void Noway(bool condition)
+    {
+        assert(condition);
+    }
+
+    void DispIns(instrDesc* id, bool isNew, bool doffs, bool asmfm)
+    {
+    }
+};
+
+class EncodeOutput
+{
+    emitter* m_emitter;
+    BYTE*    m_dst;
+    BYTE*    m_instruction;
+
+public:
+    EncodeOutput(emitter* emitter, BYTE* destination) : m_emitter(emitter), m_dst(destination), m_instruction(nullptr)
+    {
+    }
+
+    bool IsEncoding()
+    {
+        return true;
+    }
+
+    BYTE* GetDestination()
+    {
+        return m_dst;
+    }
+
+    void SetDestination(BYTE* destination)
+    {
+        m_dst = destination;
+    }
+
+    void BeginInstruction()
+    {
+        m_instruction = m_dst;
+    }
+
+    unsigned char GetCurrentInstructionSize()
+    {
+        return static_cast<unsigned char>(m_dst - m_instruction);
+    }
+
+    void OutputByte(ssize_t val)
+    {
+        m_dst += m_emitter->emitOutputByte(m_dst, val);
+    }
+
+    void OutputWord(ssize_t val)
+    {
+        m_dst += m_emitter->emitOutputWord(m_dst, val);
+    }
+
+    void OutputLong(ssize_t val)
+    {
+        m_dst += m_emitter->emitOutputLong(m_dst, val);
+    }
+
+    void OutputSizeT(ssize_t val)
+    {
+        m_dst += m_emitter->emitOutputSizeT(m_dst, val);
+    }
+
+    void OutputNOP(size_t size);
+
+    void OutputSkip(size_t size)
+    {
+        m_dst += size;
+    }
+
+    void GCregLiveSet(GCtype gcType, regMaskTP mask, bool isThis)
+    {
+        m_emitter->emitGCregLiveSet(gcType, mask, m_dst, isThis);
+    }
+
+    void GCregLiveUpd(GCtype gcType, regNumber reg)
+    {
+        m_emitter->emitGCregLiveUpd(gcType, reg, m_dst);
+    }
+
+    void GCregDeadUpd(regNumber reg)
+    {
+        m_emitter->emitGCregDeadUpd(reg, m_dst);
+    }
+
+    void UpdateLiveGCvars(VARSET_VALARG_TP vars)
+    {
+        m_emitter->emitUpdateLiveGCvars(vars, m_dst);
+    }
+
+    void UpdateLiveGCvarsBeforeCall(VARSET_VALARG_TP vars)
+    {
+        assert(m_instruction != nullptr);
+        assert(m_instruction != m_dst);
+        m_emitter->emitUpdateLiveGCvars(vars, m_instruction);
+    }
+
+    void UpdateLiveGCregs(GCtype gcType, regMaskTP regs)
+    {
+        m_emitter->emitUpdateLiveGCregs(gcType, regs, m_dst);
+    }
+
+    void GCregDeadUpdMask(regMaskTP regs)
+    {
+        m_emitter->emitGCregDeadUpdMask(regs, m_dst);
+    }
+
+    void GCvarLiveUpd(int offs, int varNum, GCtype gcType)
+    {
+        m_emitter->emitGCvarLiveUpd(offs, varNum, gcType, m_dst);
+    }
+
+    void GCvarDeadSet(int offs, ssize_t disp)
+    {
+        m_emitter->emitGCvarDeadSet(offs, m_dst, disp);
+    }
+
+    void RecordRelocation(void* target, uint16_t relocType, uint16_t slotNum = 0, int32_t addlDelta = 0)
+    {
+        m_emitter->emitRecordRelocation(m_dst - sizeof(int32_t), target, relocType, slotNum, addlDelta);
+    }
+
+    void RecordRelocation(size_t size, void* target, uint16_t relocType, uint16_t slotNum = 0, int32_t addlDelta = 0)
+    {
+        m_emitter->emitRecordRelocation(m_dst - size, target, relocType, slotNum, addlDelta);
+    }
+
+    void RecordCallSite(CORINFO_SIG_INFO* callSig, CORINFO_METHOD_HANDLE methodHandle)
+    {
+        INDEBUG(m_emitter->emitRecordCallSite(m_emitter->emitCurCodeOffs(m_instruction), callSig, methodHandle);)
+    }
+
+    void RecordGCCall(unsigned char callInstrSize)
+    {
+        m_emitter->emitRecordGCcall(m_dst, callInstrSize);
+    }
+
+    void StackPop(bool isCall, unsigned char callInstrSize, unsigned count = 1)
+    {
+        m_emitter->emitStackPop(m_dst, isCall, callInstrSize, count);
+    }
+
+    void StackKillArgs(unsigned count, unsigned char callInstrSize)
+    {
+        m_emitter->emitStackKillArgs(m_dst, count, callInstrSize);
+    }
+
+    void Align()
+    {
+        OutputNOP(reinterpret_cast<uintptr_t>(m_dst) & 0x0f);
+    }
+
+    void Noway(bool condition)
+    {
+        noway_assert(condition);
+    }
+
+    void DispIns(instrDesc* id, bool isNew, bool doffs, bool asmfm)
+    {
+        INDEBUG(m_emitter->emitDispIns(id, isNew, doffs, asmfm, m_emitter->emitCurCodeOffs(m_instruction),
+                                       m_instruction, GetCurrentInstructionSize());)
+    }
+};
+
+template <class Output>
+void emitOutputAM(Output& out, instrDesc* id, code_t code, CnsVal* addc = nullptr);
+template <class Output>
+void emitOutputSV(Output& out, instrDesc* id, code_t code, CnsVal* addc = nullptr);
+template <class Output>
+void emitOutputCV(Output& out, instrDesc* id, code_t code, CnsVal* addc = nullptr);
+
+template <class Output>
+void emitOutputR(Output& out, instrDesc* id);
+template <class Output>
+void emitOutputRI(Output& out, instrDesc* id);
+template <class Output>
+void emitOutputRR(Output& out, instrDesc* id);
+template <class Output>
+void emitOutputIV(Output& out, instrDesc* id);
+
+template <class Output>
+void emitOutputRRR(Output& out, instrDesc* id);
+
+template <class Output>
+void emitOutputLJ(Output& out, instrDesc* id);
+
+template <class Output>
+void emitOutputRexOrVexPrefixIfNeeded(Output& out, instruction ins, code_t& code);
+
 unsigned emitGetRexPrefixSize(instruction ins);
 unsigned emitGetVexPrefixSize(instruction ins, emitAttr attr);
 unsigned emitGetPrefixSize(code_t code);
@@ -135,6 +423,7 @@ code_t AddVexPrefixIfNeededAndNotPresent(instruction ins, code_t code, emitAttr 
     return code;
 }
 
+public:
 bool useVEXEncodings;
 bool UseVEXEncoding()
 {

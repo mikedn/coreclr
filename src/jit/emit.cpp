@@ -3462,19 +3462,17 @@ void emitter::emitDispGCinfo()
  *  emitOutputInstr() that does a few debug checks.
  */
 
-size_t emitter::emitIssue1Instr(insGroup* ig, instrDesc* id, BYTE** dp)
+size_t emitter::emitIssue1Instr(EncodeOutput& out, insGroup* ig, instrDesc* id)
 {
     size_t is;
 
-    /* Record the beginning offset of the instruction */
-
-    BYTE* curInsAdr = *dp;
+    out.BeginInstruction();
 
     /* Issue the next instruction */
 
     // printf("[S=%02u] " , emitCurStackLvl);
 
-    is = emitOutputInstr(ig, id, dp);
+    is = emitOutputInstr(out, ig, id);
 
 // printf("[S=%02u]\n", emitCurStackLvl);
 
@@ -3492,7 +3490,7 @@ size_t emitter::emitIssue1Instr(insGroup* ig, instrDesc* id, BYTE** dp)
 
     /* Did the size of the instruction match our expectations? */
 
-    UNATIVE_OFFSET csz = (UNATIVE_OFFSET)(*dp - curInsAdr);
+    UNATIVE_OFFSET csz = out.GetCurrentInstructionSize();
 
     if (csz != id->idCodeSize())
     {
@@ -4501,7 +4499,6 @@ unsigned emitter::emitEndCodeGen(Compiler* comp,
     BYTE* consBlock;
     BYTE* codeBlock;
     BYTE* coldCodeBlock;
-    BYTE* cp;
 
     assert(emitCurIG == nullptr);
 
@@ -4871,7 +4868,7 @@ unsigned emitter::emitEndCodeGen(Compiler* comp,
 #endif
 
     /* Issue all instruction groups in order */
-    cp = codeBlock;
+    EncodeOutput out(this, codeBlock);
 
 #define DEFAULT_CODE_BUFFER_INIT 0xcc
 
@@ -4882,10 +4879,10 @@ unsigned emitter::emitEndCodeGen(Compiler* comp,
         /* Is this the first cold block? */
         if (ig == emitFirstColdIG)
         {
-            assert(emitCurCodeOffs(cp) == emitTotalHotCodeSize);
+            assert(emitCurCodeOffs(out.GetDestination()) == emitTotalHotCodeSize);
 
             assert(coldCodeBlock);
-            cp = coldCodeBlock;
+            out.SetDestination(coldCodeBlock);
 #ifdef DEBUG
             if (emitComp->opts.disAsm || emitComp->opts.dspEmit || emitComp->verbose)
             {
@@ -4903,7 +4900,7 @@ unsigned emitter::emitEndCodeGen(Compiler* comp,
         // If this instruction group is returned to from a funclet implementing a finally,
         // on architectures where it is necessary generate GC info for the current instruction as
         // if it were the instruction following a call.
-        emitGenGCInfoIfFuncletRetTarget(ig, cp);
+        emitGenGCInfoIfFuncletRetTarget(out, ig);
 
         instrDesc* id = (instrDesc*)ig->igData;
 
@@ -4926,22 +4923,22 @@ unsigned emitter::emitEndCodeGen(Compiler* comp,
 
 #endif // DEBUG
 
-        BYTE* bp = cp;
+        BYTE* bp = out.GetDestination();
 
         /* Record the actual offset of the block, noting the difference */
 
-        emitOffsAdj = ig->igOffs - emitCurCodeOffs(cp);
+        emitOffsAdj = ig->igOffs - emitCurCodeOffs(out.GetDestination());
         assert(emitOffsAdj >= 0);
 
 #if DEBUG_EMIT
         if ((emitOffsAdj != 0) && emitComp->verbose)
         {
-            printf("Block predicted offs = %08X, actual = %08X -> size adj = %d\n", ig->igOffs, emitCurCodeOffs(cp),
-                   emitOffsAdj);
+            printf("Block predicted offs = %08X, actual = %08X -> size adj = %d\n", ig->igOffs,
+                   emitCurCodeOffs(out.GetDestination()), emitOffsAdj);
         }
 #endif // DEBUG_EMIT
 
-        ig->igOffs = emitCurCodeOffs(cp);
+        ig->igOffs = emitCurCodeOffs(out.GetDestination());
         assert(IsCodeAligned(ig->igOffs));
 
 #if EMIT_TRACK_STACK_DEPTH
@@ -4953,7 +4950,7 @@ unsigned emitter::emitEndCodeGen(Compiler* comp,
             /* We are pushing stuff implicitly at this label */
 
             assert((unsigned)ig->igStkLvl > (unsigned)emitCurStackLvl);
-            emitStackPushN(cp, (ig->igStkLvl - (unsigned)emitCurStackLvl) / sizeof(int));
+            emitStackPushN(out.GetDestination(), (ig->igStkLvl - (unsigned)emitCurStackLvl) / sizeof(int));
         }
 
 #endif
@@ -4966,11 +4963,11 @@ unsigned emitter::emitEndCodeGen(Compiler* comp,
 
             if (ig->igFlags & IGF_GC_VARS)
             {
-                emitUpdateLiveGCvars(ig->igGCvars(), cp);
+                out.UpdateLiveGCvars(ig->igGCvars());
             }
             else if (!emitThisGCrefVset)
             {
-                emitUpdateLiveGCvars(emitThisGCrefVars, cp);
+                out.UpdateLiveGCvars(emitThisGCrefVars);
             }
 
             /* Update the set of live GC ref registers */
@@ -4980,7 +4977,7 @@ unsigned emitter::emitEndCodeGen(Compiler* comp,
 
                 if (GCregs != emitThisGCrefRegs)
                 {
-                    emitUpdateLiveGCregs(GCT_GCREF, GCregs, cp);
+                    out.UpdateLiveGCregs(GCT_GCREF, GCregs);
                 }
             }
 
@@ -4992,7 +4989,7 @@ unsigned emitter::emitEndCodeGen(Compiler* comp,
 
                 if (byrefRegs != emitThisByrefRegs)
                 {
-                    emitUpdateLiveGCregs(GCT_BYREF, byrefRegs, cp);
+                    out.UpdateLiveGCregs(GCT_BYREF, byrefRegs);
                 }
             }
         }
@@ -5009,35 +5006,36 @@ unsigned emitter::emitEndCodeGen(Compiler* comp,
 
         for (unsigned cnt = ig->igInsCnt; cnt; cnt--)
         {
-            assert(cp >= emitCodeBlock && cp <= emitCodeBlock + emitTotalHotCodeSize);
-            castto(id, BYTE*) += emitIssue1Instr(ig, id, &cp);
+            assert(out.GetDestination() >= emitCodeBlock &&
+                   out.GetDestination() <= emitCodeBlock + emitTotalHotCodeSize);
+            castto(id, BYTE*) += emitIssue1Instr(out, ig, id);
         }
 
         emitCurIG = nullptr;
 
-        assert(ig->igSize >= cp - bp);
+        assert(ig->igSize >= out.GetDestination() - bp);
 
         // Is it the last ig in the hot part?
         bool lastHotIG = (emitFirstColdIG != nullptr && ig->igNext == emitFirstColdIG);
         if (lastHotIG)
         {
-            unsigned actualHotCodeSize    = emitCurCodeOffs(cp);
+            unsigned actualHotCodeSize    = emitCurCodeOffs(out.GetDestination());
             unsigned allocatedHotCodeSize = emitTotalHotCodeSize;
             assert(actualHotCodeSize <= allocatedHotCodeSize);
             if (actualHotCodeSize < allocatedHotCodeSize)
             {
                 // The allocated chunk is bigger than used, fill in unused space in it.
-                unsigned unusedSize = allocatedHotCodeSize - emitCurCodeOffs(cp);
+                unsigned unusedSize = allocatedHotCodeSize - emitCurCodeOffs(out.GetDestination());
                 for (unsigned i = 0; i < unusedSize; ++i)
                 {
-                    *cp++ = DEFAULT_CODE_BUFFER_INIT;
+                    out.GetDestination()[i] = DEFAULT_CODE_BUFFER_INIT;
                 }
-                assert(allocatedHotCodeSize == emitCurCodeOffs(cp));
+                assert(allocatedHotCodeSize == emitCurCodeOffs(out.GetDestination()));
             }
         }
 
-        assert((ig->igSize >= cp - bp) || lastHotIG);
-        ig->igSize = (unsigned short)(cp - bp);
+        assert((ig->igSize >= out.GetDestination() - bp) || lastHotIG);
+        ig->igSize = (unsigned short)(out.GetDestination() - bp);
     }
 
 #if EMIT_TRACK_STACK_DEPTH
@@ -5064,7 +5062,7 @@ unsigned emitter::emitEndCodeGen(Compiler* comp,
         {
             if (*dp)
             {
-                emitGCvarDeadSet(of, cp, vn);
+                out.GCvarDeadSet(of, vn);
             }
         }
     }
@@ -5073,11 +5071,11 @@ unsigned emitter::emitEndCodeGen(Compiler* comp,
 
     if (emitThisByrefRegs)
     {
-        emitUpdateLiveGCregs(GCT_BYREF, RBM_NONE, cp);
+        out.UpdateLiveGCregs(GCT_BYREF, RBM_NONE);
     }
     if (emitThisGCrefRegs)
     {
-        emitUpdateLiveGCregs(GCT_GCREF, RBM_NONE, cp);
+        out.UpdateLiveGCregs(GCT_GCREF, RBM_NONE);
     }
 
     /* Patch any forward jumps */
@@ -5173,11 +5171,12 @@ unsigned emitter::emitEndCodeGen(Compiler* comp,
 
     if (emitComp->verbose)
     {
-        printf("Allocated method code size = %4u , actual size = %4u\n", emitTotalCodeSize, cp - codeBlock);
+        printf("Allocated method code size = %4u , actual size = %4u\n", emitTotalCodeSize,
+               out.GetDestination() - codeBlock);
     }
 #endif
 
-    unsigned actualCodeSize = emitCurCodeOffs(cp);
+    unsigned actualCodeSize = emitCurCodeOffs(out.GetDestination());
 
 #if EMITTER_STATS
     totAllocdSize += emitTotalCodeSize;
@@ -5187,12 +5186,12 @@ unsigned emitter::emitEndCodeGen(Compiler* comp,
     // Fill in eventual unused space, but do not report this space as used.
     // If you add this padding during the emitIGlist loop, then it will
     // emit offsets after the loop with wrong value (for example for GC ref variables).
-    unsigned unusedSize = emitTotalCodeSize - emitCurCodeOffs(cp);
+    unsigned unusedSize = emitTotalCodeSize - emitCurCodeOffs(out.GetDestination());
     for (unsigned i = 0; i < unusedSize; ++i)
     {
-        *cp++ = DEFAULT_CODE_BUFFER_INIT;
+        out.GetDestination()[i] = DEFAULT_CODE_BUFFER_INIT;
     }
-    assert(emitTotalCodeSize == emitCurCodeOffs(cp));
+    assert(emitTotalCodeSize == emitCurCodeOffs(out.GetDestination()));
 
     // Total code size is sum of all IG->size and doesn't include padding in the last IG.
     emitTotalCodeSize = actualCodeSize;
@@ -5228,7 +5227,7 @@ unsigned emitter::emitEndCodeGen(Compiler* comp,
 }
 
 // See specification comment at the declaration.
-void emitter::emitGenGCInfoIfFuncletRetTarget(insGroup* ig, BYTE* cp)
+void emitter::emitGenGCInfoIfFuncletRetTarget(EncodeOutput& out, insGroup* ig)
 {
 #if FEATURE_EH_FUNCLETS && defined(_TARGET_ARM_)
     // We only emit this GC information on targets where finally's are implemented via funclets,

@@ -640,7 +640,8 @@ bool isPrefix(BYTE b)
 }
 
 // Outputs VEX prefix (in case of AVX instructions) and REX.R/X/W/B otherwise.
-unsigned emitter::emitOutputRexOrVexPrefixIfNeeded(instruction ins, BYTE* dst, code_t& code)
+template <class Output>
+void emitter::emitOutputRexOrVexPrefixIfNeeded(Output& out, instruction ins, code_t& code)
 {
     if (hasVexPrefix(code))
     {
@@ -786,22 +787,22 @@ unsigned emitter::emitOutputRexOrVexPrefixIfNeeded(instruction ins, BYTE* dst, c
         //   * W must be unset                    (0x00 validates bit 7)
         if ((vexPrefix & 0xFFFF7F80) == 0x00C46100)
         {
-            emitOutputByte(dst, 0xC5);
-            emitOutputByte(dst + 1, ((vexPrefix >> 8) & 0x80) | (vexPrefix & 0x7F));
-            return 2;
+            out.OutputByte(0xC5);
+            out.OutputByte(((vexPrefix >> 8) & 0x80) | (vexPrefix & 0x7F));
+            return;
         }
 
-        emitOutputByte(dst, ((vexPrefix >> 16) & 0xFF));
-        emitOutputByte(dst + 1, ((vexPrefix >> 8) & 0xFF));
-        emitOutputByte(dst + 2, vexPrefix & 0xFF);
-        return 3;
+        out.OutputByte(((vexPrefix >> 16) & 0xFF));
+        out.OutputByte(((vexPrefix >> 8) & 0xFF));
+        out.OutputByte(vexPrefix & 0xFF);
+        return;
     }
 
 #ifdef _TARGET_AMD64_
     if (code > 0x00FFFFFFFFLL)
     {
         BYTE prefix = (code >> 32) & 0xFF;
-        noway_assert(prefix >= 0x40 && prefix <= 0x4F);
+        out.Noway(prefix >= 0x40 && prefix <= 0x4F);
         code &= 0x00000000FFFFFFFFLL;
 
         // TODO-AMD64-Cleanup: when we remove the prefixes (just the SSE opcodes right now)
@@ -822,7 +823,8 @@ unsigned emitter::emitOutputRexOrVexPrefixIfNeeded(instruction ins, BYTE* dst, c
                 // Swap the rex prefix and whatever this prefix is
                 code = (((DWORD)prefix << 16) | (code & 0x0000FFFFLL));
                 // and then emit the other prefix
-                return emitOutputByte(dst, check);
+                out.OutputByte(check);
+                return;
             }
         }
         else
@@ -845,15 +847,14 @@ unsigned emitter::emitOutputRexOrVexPrefixIfNeeded(instruction ins, BYTE* dst, c
                     // Change to c2XXrrXXXX, and emit check2 now
                     code = (((code_t)check << 24) | ((code_t)prefix << 16) | (code & 0x0000FFFFLL));
                 }
-                return emitOutputByte(dst, check2);
+                out.OutputByte(check2);
+                return;
             }
         }
 
-        return emitOutputByte(dst, prefix);
+        out.OutputByte(prefix);
     }
 #endif // _TARGET_AMD64_
-
-    return 0;
 }
 
 #ifdef _TARGET_AMD64_
@@ -2149,11 +2150,9 @@ void emitter::emitPredictInstSize(instrDesc* id, UNATIVE_OFFSET prevSize, bool s
     }
     else
     {
-        BYTE  arr[17] = {0};
-        BYTE* arrP    = arr;
-
-        emitOutputInstr<false>(emitCurIG, id, &arrP);
-        UNATIVE_OFFSET newSize = (UNATIVE_OFFSET)(arrP - arr);
+        SizeOutput output(this);
+        emitOutputInstr(output, emitCurIG, id);
+        UNATIVE_OFFSET newSize = output.GetCurrentInstructionSize();
         if (!skipPrevSize)
         {
             assert(newSize <= prevSize);
@@ -2185,8 +2184,9 @@ void emitter::emitPredictInstSize(instrDesc* id, UNATIVE_OFFSET prevSize, bool s
 
         if (counter % 10000 == 0)
         {
-            printf("counter %d, oldSize %d, newSize %d, ratio %lf, counter new %d, new %.2lf\n", counter, sizeOld,
-                   sizeNew, (double)sizeOld / sizeNew, counterNew, counterNewBetter * 100.0 / counter);
+            INDEBUG(printf("counter %d, oldSize %d, newSize %d, ratio %lf, counter new %d, new %.2lf\n", counter,
+                           sizeOld, sizeNew, (double)sizeOld / sizeNew, counterNew,
+                           counterNewBetter * 100.0 / counter);)
         }
     }
 
@@ -8246,13 +8246,18 @@ static BYTE* emitOutputNOP(BYTE* dst, size_t nBytes)
     return dst;
 }
 
+void emitter::EncodeOutput::OutputNOP(size_t size)
+{
+    m_dst = emitOutputNOP(m_dst, size);
+}
+
 /*****************************************************************************
  *
  *  Output an instruction involving an address mode.
  */
 
-template <bool generateCode>
-BYTE* emitter::emitOutputAM(BYTE* dst, instrDesc* id, code_t code, CnsVal* addc)
+template <class Output>
+void emitter::emitOutputAM(Output& out, instrDesc* id, code_t code, CnsVal* addc)
 {
     regNumber reg;
     regNumber rgx;
@@ -8276,8 +8281,8 @@ BYTE* emitter::emitOutputAM(BYTE* dst, instrDesc* id, code_t code, CnsVal* addc)
         {
             code_t opcode = insEncodeMRreg(INS_call, reg, EA_PTRSIZE, insCodeMR(INS_call));
 
-            dst += emitOutputRexOrVexPrefixIfNeeded(ins, dst, opcode);
-            dst += emitOutputWord(dst, opcode);
+            emitOutputRexOrVexPrefixIfNeeded(out, ins, opcode);
+            out.OutputWord(opcode);
             goto DONE;
         }
 
@@ -8302,7 +8307,7 @@ BYTE* emitter::emitOutputAM(BYTE* dst, instrDesc* id, code_t code, CnsVal* addc)
         }
 
         // And emit the REX prefix
-        dst += emitOutputRexOrVexPrefixIfNeeded(ins, dst, code);
+        emitOutputRexOrVexPrefixIfNeeded(out, ins, code);
 
 #endif // _TARGET_AMD64_
 
@@ -8398,7 +8403,7 @@ BYTE* emitter::emitOutputAM(BYTE* dst, instrDesc* id, code_t code, CnsVal* addc)
 
             if (size == EA_2BYTE)
             {
-                dst += emitOutputByte(dst, 0x66);
+                out.OutputByte(0x66);
             }
         }
 
@@ -8426,19 +8431,19 @@ BYTE* emitter::emitOutputAM(BYTE* dst, instrDesc* id, code_t code, CnsVal* addc)
         }
         unsigned regcode = insEncodeReg345(ins, reg345, size, &code);
 
-        dst += emitOutputRexOrVexPrefixIfNeeded(ins, dst, code);
+        emitOutputRexOrVexPrefixIfNeeded(out, ins, code);
 
         if (UseVEXEncoding() && (ins != INS_crc32))
         {
             // Emit last opcode byte
             // TODO-XArch-CQ: Right now support 4-byte opcode instructions only
             assert((code & 0xFF) == 0);
-            dst += emitOutputByte(dst, (code >> 8) & 0xFF);
+            out.OutputByte((code >> 8) & 0xFF);
         }
         else
         {
-            dst += emitOutputWord(dst, code >> 16);
-            dst += emitOutputWord(dst, code & 0xFFFF);
+            out.OutputWord(code >> 16);
+            out.OutputWord(code & 0xFFFF);
         }
 
         code = regcode;
@@ -8447,14 +8452,14 @@ BYTE* emitter::emitOutputAM(BYTE* dst, instrDesc* id, code_t code, CnsVal* addc)
     else if (code & 0xFF000000)
     {
         // Output the REX prefix
-        dst += emitOutputRexOrVexPrefixIfNeeded(ins, dst, code);
+        emitOutputRexOrVexPrefixIfNeeded(out, ins, code);
 
         // Output the highest word of the opcode
         // We need to check again as in case of AVX instructions leading opcode bytes are stripped off
         // and encoded as part of VEX prefix.
         if (code & 0xFF000000)
         {
-            dst += emitOutputWord(dst, code >> 16);
+            out.OutputWord(code >> 16);
             code &= 0x0000FFFF;
         }
     }
@@ -8464,12 +8469,12 @@ BYTE* emitter::emitOutputAM(BYTE* dst, instrDesc* id, code_t code, CnsVal* addc)
         assert(ins != INS_bt);
 
         // Output the REX prefix
-        dst += emitOutputRexOrVexPrefixIfNeeded(ins, dst, code);
+        emitOutputRexOrVexPrefixIfNeeded(out, ins, code);
 
         // Output the highest byte of the opcode
         if (code & 0x00FF0000)
         {
-            dst += emitOutputByte(dst, code >> 16);
+            out.OutputByte(code >> 16);
             code &= 0x0000FFFF;
         }
 
@@ -8501,7 +8506,7 @@ BYTE* emitter::emitOutputAM(BYTE* dst, instrDesc* id, code_t code, CnsVal* addc)
 
                 /* Output a size prefix for a 16-bit operand */
 
-                dst += emitOutputByte(dst, 0x66);
+                out.OutputByte(0x66);
 
                 __fallthrough;
 
@@ -8532,7 +8537,7 @@ BYTE* emitter::emitOutputAM(BYTE* dst, instrDesc* id, code_t code, CnsVal* addc)
     }
 
     // Output the REX prefix
-    dst += emitOutputRexOrVexPrefixIfNeeded(ins, dst, code);
+    emitOutputRexOrVexPrefixIfNeeded(out, ins, code);
 
     // Get the displacement value
     dsp = emitGetInsAmdAny(id);
@@ -8564,11 +8569,11 @@ GOT_DSP:
                     // On Amd64 - disp is relative to RIP
                     if (EncodedBySSE38orSSE3A(ins) || (ins == INS_crc32))
                     {
-                        dst += emitOutputByte(dst, code | 0x05);
+                        out.OutputByte(code | 0x05);
                     }
                     else
                     {
-                        dst += emitOutputWord(dst, code | 0x0500);
+                        out.OutputWord(code | 0x0500);
                     }
 
                     if (addc)
@@ -8581,9 +8586,9 @@ GOT_DSP:
 
 #ifdef _TARGET_AMD64_
                         // all these opcodes only take a sign-extended 4-byte immediate
-                        noway_assert(opsz < 8 || ((int)cval == cval && !addc->cnsReloc));
+                        out.Noway(opsz < 8 || ((int)cval == cval && !addc->cnsReloc));
 #else  //_TARGET_X86_
-                        noway_assert(opsz <= 4);
+                        out.Noway(opsz <= 4);
 #endif //_TARGET_X86_
 
                         switch (opsz)
@@ -8608,47 +8613,43 @@ GOT_DSP:
 
 #ifdef _TARGET_AMD64_
                     // We emit zero on Amd64, to avoid the assert in emitOutputLong()
-                    dst += emitOutputLong(dst, 0);
+                    out.OutputLong(0);
 #else
-                    dst += emitOutputLong(dst, dsp);
+                    out.OutputLong(dsp);
 #endif
-                    if (generateCode)
-                    {
-                        emitRecordRelocation((void*)(dst - sizeof(INT32)), (void*)dsp, IMAGE_REL_BASED_DISP32, 0,
-                                             addlDelta);
-                    }
+                    out.RecordRelocation((void*)dsp, IMAGE_REL_BASED_DISP32, 0, addlDelta);
                 }
                 else
                 {
 #ifdef _TARGET_X86_
                     if (EncodedBySSE38orSSE3A(ins) || (ins == INS_crc32))
                     {
-                        dst += emitOutputByte(dst, code | 0x05);
+                        out.OutputByte(code | 0x05);
                     }
                     else
                     {
-                        dst += emitOutputWord(dst, code | 0x0500);
+                        out.OutputWord(code | 0x0500);
                     }
 #else  //_TARGET_AMD64_
                     // Amd64: addr fits within 32-bits and can be encoded as a displacement relative to zero.
                     // This addr mode should never be used while generating relocatable ngen code nor if
                     // the addr can be encoded as pc-relative address.
-                    noway_assert(!emitComp->opts.compReloc);
-                    noway_assert(codeGen->genAddrRelocTypeHint((size_t)dsp) != IMAGE_REL_BASED_REL32);
-                    noway_assert((int)dsp == dsp);
+                    out.Noway(!emitComp->opts.compReloc);
+                    out.Noway(codeGen->genAddrRelocTypeHint((size_t)dsp) != IMAGE_REL_BASED_REL32);
+                    out.Noway((int)dsp == dsp);
 
                     // This requires, specifying a SIB byte after ModRM byte.
                     if (EncodedBySSE38orSSE3A(ins))
                     {
-                        dst += emitOutputByte(dst, code | 0x04);
+                        out.OutputByte(code | 0x04);
                     }
                     else
                     {
-                        dst += emitOutputWord(dst, code | 0x0400);
+                        out.OutputWord(code | 0x0400);
                     }
-                    dst += emitOutputByte(dst, 0x25);
+                    out.OutputByte(0x25);
 #endif //_TARGET_AMD64_
-                    dst += emitOutputLong(dst, dsp);
+                    out.OutputLong(dsp);
                 }
                 break;
             }
@@ -8660,17 +8661,17 @@ GOT_DSP:
                     // Does the offset fit in a byte?
                     if (dspInByte)
                     {
-                        dst += emitOutputByte(dst, code | 0x45);
-                        dst += emitOutputByte(dst, dsp);
+                        out.OutputByte(code | 0x45);
+                        out.OutputByte(dsp);
                     }
                     else
                     {
-                        dst += emitOutputByte(dst, code | 0x85);
-                        dst += emitOutputLong(dst, dsp);
+                        out.OutputByte(code | 0x85);
+                        out.OutputLong(dsp);
 
-                        if (generateCode && id->idIsDspReloc())
+                        if (id->idIsDspReloc())
                         {
-                            emitRecordRelocation((void*)(dst - sizeof(INT32)), (void*)dsp, IMAGE_REL_BASED_HIGHLOW);
+                            out.RecordRelocation((void*)dsp, IMAGE_REL_BASED_HIGHLOW);
                         }
                     }
                 }
@@ -8679,17 +8680,17 @@ GOT_DSP:
                     // Does the offset fit in a byte?
                     if (dspInByte)
                     {
-                        dst += emitOutputWord(dst, code | 0x4500);
-                        dst += emitOutputByte(dst, dsp);
+                        out.OutputWord(code | 0x4500);
+                        out.OutputByte(dsp);
                     }
                     else
                     {
-                        dst += emitOutputWord(dst, code | 0x8500);
-                        dst += emitOutputLong(dst, dsp);
+                        out.OutputWord(code | 0x8500);
+                        out.OutputLong(dsp);
 
-                        if (generateCode && id->idIsDspReloc())
+                        if (id->idIsDspReloc())
                         {
-                            emitRecordRelocation((void*)(dst - sizeof(INT32)), (void*)dsp, IMAGE_REL_BASED_HIGHLOW);
+                            out.RecordRelocation((void*)dsp, IMAGE_REL_BASED_HIGHLOW);
                         }
                     }
                 }
@@ -8703,23 +8704,23 @@ GOT_DSP:
                     // Is the offset 0 or does it at least fit in a byte?
                     if (dspIsZero)
                     {
-                        dst += emitOutputByte(dst, code | 0x04);
-                        dst += emitOutputByte(dst, 0x24);
+                        out.OutputByte(code | 0x04);
+                        out.OutputByte(0x24);
                     }
                     else if (dspInByte)
                     {
-                        dst += emitOutputByte(dst, code | 0x44);
-                        dst += emitOutputByte(dst, 0x24);
-                        dst += emitOutputByte(dst, dsp);
+                        out.OutputByte(code | 0x44);
+                        out.OutputByte(0x24);
+                        out.OutputByte(dsp);
                     }
                     else
                     {
-                        dst += emitOutputByte(dst, code | 0x84);
-                        dst += emitOutputByte(dst, 0x24);
-                        dst += emitOutputLong(dst, dsp);
-                        if (generateCode && id->idIsDspReloc())
+                        out.OutputByte(code | 0x84);
+                        out.OutputByte(0x24);
+                        out.OutputLong(dsp);
+                        if (id->idIsDspReloc())
                         {
-                            emitRecordRelocation((void*)(dst - sizeof(INT32)), (void*)dsp, IMAGE_REL_BASED_HIGHLOW);
+                            out.RecordRelocation((void*)dsp, IMAGE_REL_BASED_HIGHLOW);
                         }
                     }
                 }
@@ -8728,23 +8729,23 @@ GOT_DSP:
                     // Is the offset 0 or does it at least fit in a byte?
                     if (dspIsZero)
                     {
-                        dst += emitOutputWord(dst, code | 0x0400);
-                        dst += emitOutputByte(dst, 0x24);
+                        out.OutputWord(code | 0x0400);
+                        out.OutputByte(0x24);
                     }
                     else if (dspInByte)
                     {
-                        dst += emitOutputWord(dst, code | 0x4400);
-                        dst += emitOutputByte(dst, 0x24);
-                        dst += emitOutputByte(dst, dsp);
+                        out.OutputWord(code | 0x4400);
+                        out.OutputByte(0x24);
+                        out.OutputByte(dsp);
                     }
                     else
                     {
-                        dst += emitOutputWord(dst, code | 0x8400);
-                        dst += emitOutputByte(dst, 0x24);
-                        dst += emitOutputLong(dst, dsp);
-                        if (generateCode && id->idIsDspReloc())
+                        out.OutputWord(code | 0x8400);
+                        out.OutputByte(0x24);
+                        out.OutputLong(dsp);
+                        if (id->idIsDspReloc())
                         {
-                            emitRecordRelocation((void*)(dst - sizeof(INT32)), (void*)dsp, IMAGE_REL_BASED_HIGHLOW);
+                            out.RecordRelocation((void*)dsp, IMAGE_REL_BASED_HIGHLOW);
                         }
                     }
                 }
@@ -8762,23 +8763,23 @@ GOT_DSP:
                     if (dspIsZero)
                     {
                         // This is simply "[reg]"
-                        dst += emitOutputByte(dst, code);
+                        out.OutputByte(code);
                     }
                     else
                     {
                         // This is [reg + dsp]" -- does the offset fit in a byte?
                         if (dspInByte)
                         {
-                            dst += emitOutputByte(dst, code | 0x40);
-                            dst += emitOutputByte(dst, dsp);
+                            out.OutputByte(code | 0x40);
+                            out.OutputByte(dsp);
                         }
                         else
                         {
-                            dst += emitOutputByte(dst, code | 0x80);
-                            dst += emitOutputLong(dst, dsp);
-                            if (generateCode && id->idIsDspReloc())
+                            out.OutputByte(code | 0x80);
+                            out.OutputLong(dsp);
+                            if (id->idIsDspReloc())
                             {
-                                emitRecordRelocation((void*)(dst - sizeof(INT32)), (void*)dsp, IMAGE_REL_BASED_HIGHLOW);
+                                out.RecordRelocation((void*)dsp, IMAGE_REL_BASED_HIGHLOW);
                             }
                         }
                     }
@@ -8792,23 +8793,23 @@ GOT_DSP:
                     if (dspIsZero)
                     {
                         // This is simply "[reg]"
-                        dst += emitOutputWord(dst, code);
+                        out.OutputWord(code);
                     }
                     else
                     {
                         // This is [reg + dsp]" -- does the offset fit in a byte?
                         if (dspInByte)
                         {
-                            dst += emitOutputWord(dst, code | 0x4000);
-                            dst += emitOutputByte(dst, dsp);
+                            out.OutputWord(code | 0x4000);
+                            out.OutputByte(dsp);
                         }
                         else
                         {
-                            dst += emitOutputWord(dst, code | 0x8000);
-                            dst += emitOutputLong(dst, dsp);
-                            if (generateCode && id->idIsDspReloc())
+                            out.OutputWord(code | 0x8000);
+                            out.OutputLong(dsp);
+                            if (id->idIsDspReloc())
                             {
-                                emitRecordRelocation((void*)(dst - sizeof(INT32)), (void*)dsp, IMAGE_REL_BASED_HIGHLOW);
+                                out.RecordRelocation((void*)dsp, IMAGE_REL_BASED_HIGHLOW);
                             }
                         }
                     }
@@ -8841,26 +8842,26 @@ GOT_DSP:
                     if (dspIsZero && reg != REG_EBP)
                     {
                         // The address is "[reg + {2/4/8} * rgx]"
-                        dst += emitOutputByte(dst, code | 0x04);
-                        dst += emitOutputByte(dst, regByte);
+                        out.OutputByte(code | 0x04);
+                        out.OutputByte(regByte);
                     }
                     else
                     {
                         // The address is "[reg + {2/4/8} * rgx + disp]"
                         if (dspInByte)
                         {
-                            dst += emitOutputByte(dst, code | 0x44);
-                            dst += emitOutputByte(dst, regByte);
-                            dst += emitOutputByte(dst, dsp);
+                            out.OutputByte(code | 0x44);
+                            out.OutputByte(regByte);
+                            out.OutputByte(dsp);
                         }
                         else
                         {
-                            dst += emitOutputByte(dst, code | 0x84);
-                            dst += emitOutputByte(dst, regByte);
-                            dst += emitOutputLong(dst, dsp);
-                            if (generateCode && id->idIsDspReloc())
+                            out.OutputByte(code | 0x84);
+                            out.OutputByte(regByte);
+                            out.OutputLong(dsp);
+                            if (id->idIsDspReloc())
                             {
-                                emitRecordRelocation((void*)(dst - sizeof(INT32)), (void*)dsp, IMAGE_REL_BASED_HIGHLOW);
+                                out.RecordRelocation((void*)dsp, IMAGE_REL_BASED_HIGHLOW);
                             }
                         }
                     }
@@ -8871,26 +8872,26 @@ GOT_DSP:
                     if (dspIsZero && reg != REG_EBP)
                     {
                         // The address is "[reg + {2/4/8} * rgx]"
-                        dst += emitOutputWord(dst, code | 0x0400);
-                        dst += emitOutputByte(dst, regByte);
+                        out.OutputWord(code | 0x0400);
+                        out.OutputByte(regByte);
                     }
                     else
                     {
                         // The address is "[reg + {2/4/8} * rgx + disp]"
                         if (dspInByte)
                         {
-                            dst += emitOutputWord(dst, code | 0x4400);
-                            dst += emitOutputByte(dst, regByte);
-                            dst += emitOutputByte(dst, dsp);
+                            out.OutputWord(code | 0x4400);
+                            out.OutputByte(regByte);
+                            out.OutputByte(dsp);
                         }
                         else
                         {
-                            dst += emitOutputWord(dst, code | 0x8400);
-                            dst += emitOutputByte(dst, regByte);
-                            dst += emitOutputLong(dst, dsp);
-                            if (generateCode && id->idIsDspReloc())
+                            out.OutputWord(code | 0x8400);
+                            out.OutputByte(regByte);
+                            out.OutputLong(dsp);
+                            if (id->idIsDspReloc())
                             {
-                                emitRecordRelocation((void*)(dst - sizeof(INT32)), (void*)dsp, IMAGE_REL_BASED_HIGHLOW);
+                                out.RecordRelocation((void*)dsp, IMAGE_REL_BASED_HIGHLOW);
                             }
                         }
                     }
@@ -8904,14 +8905,14 @@ GOT_DSP:
 
                 if (EncodedBySSE38orSSE3A(ins) || (ins == INS_crc32))
                 {
-                    dst += emitOutputByte(dst, code | 0x04);
+                    out.OutputByte(code | 0x04);
                 }
                 else
                 {
-                    dst += emitOutputWord(dst, code | 0x0400);
+                    out.OutputWord(code | 0x0400);
                 }
 
-                dst += emitOutputByte(dst, regByte);
+                out.OutputByte(regByte);
 
                 // Special case: jump through a jump table
                 if (ins == INS_i_jmp)
@@ -8919,10 +8920,10 @@ GOT_DSP:
                     dsp += (size_t)emitConsBlock;
                 }
 
-                dst += emitOutputLong(dst, dsp);
-                if (generateCode && id->idIsDspReloc())
+                out.OutputLong(dsp);
+                if (id->idIsDspReloc())
                 {
-                    emitRecordRelocation((void*)(dst - sizeof(INT32)), (void*)dsp, IMAGE_REL_BASED_HIGHLOW);
+                    out.RecordRelocation((void*)dsp, IMAGE_REL_BASED_HIGHLOW);
                 }
             }
         }
@@ -8936,26 +8937,26 @@ GOT_DSP:
                 if (dspIsZero && reg != REG_EBP)
                 {
                     // This is [reg+rgx]"
-                    dst += emitOutputByte(dst, code | 0x04);
-                    dst += emitOutputByte(dst, regByte);
+                    out.OutputByte(code | 0x04);
+                    out.OutputByte(regByte);
                 }
                 else
                 {
                     // This is [reg+rgx+dsp]" -- does the offset fit in a byte?
                     if (dspInByte)
                     {
-                        dst += emitOutputByte(dst, code | 0x44);
-                        dst += emitOutputByte(dst, regByte);
-                        dst += emitOutputByte(dst, dsp);
+                        out.OutputByte(code | 0x44);
+                        out.OutputByte(regByte);
+                        out.OutputByte(dsp);
                     }
                     else
                     {
-                        dst += emitOutputByte(dst, code | 0x84);
-                        dst += emitOutputByte(dst, regByte);
-                        dst += emitOutputLong(dst, dsp);
-                        if (generateCode && id->idIsDspReloc())
+                        out.OutputByte(code | 0x84);
+                        out.OutputByte(regByte);
+                        out.OutputLong(dsp);
+                        if (id->idIsDspReloc())
                         {
-                            emitRecordRelocation((void*)(dst - sizeof(INT32)), (void*)dsp, IMAGE_REL_BASED_HIGHLOW);
+                            out.RecordRelocation((void*)dsp, IMAGE_REL_BASED_HIGHLOW);
                         }
                     }
                 }
@@ -8965,26 +8966,26 @@ GOT_DSP:
                 if (dspIsZero && reg != REG_EBP)
                 {
                     // This is [reg+rgx]"
-                    dst += emitOutputWord(dst, code | 0x0400);
-                    dst += emitOutputByte(dst, regByte);
+                    out.OutputWord(code | 0x0400);
+                    out.OutputByte(regByte);
                 }
                 else
                 {
                     // This is [reg+rgx+dsp]" -- does the offset fit in a byte?
                     if (dspInByte)
                     {
-                        dst += emitOutputWord(dst, code | 0x4400);
-                        dst += emitOutputByte(dst, regByte);
-                        dst += emitOutputByte(dst, dsp);
+                        out.OutputWord(code | 0x4400);
+                        out.OutputByte(regByte);
+                        out.OutputByte(dsp);
                     }
                     else
                     {
-                        dst += emitOutputWord(dst, code | 0x8400);
-                        dst += emitOutputByte(dst, regByte);
-                        dst += emitOutputLong(dst, dsp);
-                        if (generateCode && id->idIsDspReloc())
+                        out.OutputWord(code | 0x8400);
+                        out.OutputByte(regByte);
+                        out.OutputLong(dsp);
+                        if (id->idIsDspReloc())
                         {
-                            emitRecordRelocation((void*)(dst - sizeof(INT32)), (void*)dsp, IMAGE_REL_BASED_HIGHLOW);
+                            out.RecordRelocation((void*)dsp, IMAGE_REL_BASED_HIGHLOW);
                         }
                     }
                 }
@@ -8999,7 +9000,7 @@ GOT_DSP:
 
 #ifdef _TARGET_AMD64_
         // all these opcodes only take a sign-extended 4-byte immediate
-        noway_assert(opsz < 8 || ((int)cval == cval && !addc->cnsReloc));
+        out.Noway(opsz < 8 || ((int)cval == cval && !addc->cnsReloc));
 #endif
 
         switch (opsz)
@@ -9007,29 +9008,29 @@ GOT_DSP:
             case 0:
             case 4:
             case 8:
-                dst += emitOutputLong(dst, cval);
+                out.OutputLong(cval);
                 break;
             case 2:
-                dst += emitOutputWord(dst, cval);
+                out.OutputWord(cval);
                 break;
             case 1:
-                dst += emitOutputByte(dst, cval);
+                out.OutputByte(cval);
                 break;
 
             default:
                 assert(!"unexpected operand size");
         }
 
-        if (generateCode && addc->cnsReloc)
+        if (addc->cnsReloc)
         {
-            emitRecordRelocation((void*)(dst - sizeof(INT32)), (void*)(size_t)cval, IMAGE_REL_BASED_HIGHLOW);
+            out.RecordRelocation((void*)(size_t)cval, IMAGE_REL_BASED_HIGHLOW);
             assert(opsz == 4);
         }
     }
 
 DONE:
 
-    if (generateCode)
+    if (out.IsEncoding())
     {
         // Does this instruction operate on a GC ref value?
         if (id->idGCref())
@@ -9045,13 +9046,13 @@ DONE:
                     break;
 
                 case IF_RWR_ARD:
-                    emitGCregLiveUpd(id->idGCref(), id->idReg1(), dst);
+                    out.GCregLiveUpd(id->idGCref(), id->idReg1());
                     break;
 
                 case IF_RRW_ARD:
                     // Mark the destination register as holding a GCT_BYREF
                     assert(id->idGCref() == GCT_BYREF && (ins == INS_add || ins == INS_sub));
-                    emitGCregLiveUpd(GCT_BYREF, id->idReg1(), dst);
+                    out.GCregLiveUpd(GCT_BYREF, id->idReg1());
                     break;
 
                 case IF_ARD_RRD:
@@ -9090,7 +9091,7 @@ DONE:
                     case IF_RWR_ARD:
                     case IF_RRW_ARD:
                     case IF_RWR_RRD_ARD:
-                        emitGCregDeadUpd(id->idReg1(), dst);
+                        out.GCregDeadUpd(id->idReg1());
                         break;
                     default:
                         break;
@@ -9098,8 +9099,8 @@ DONE:
 
                 if (ins == INS_mulEAX || ins == INS_imulEAX)
                 {
-                    emitGCregDeadUpd(REG_EAX, dst);
-                    emitGCregDeadUpd(REG_EDX, dst);
+                    out.GCregDeadUpd(REG_EAX);
+                    out.GCregDeadUpd(REG_EDX);
                 }
 
                 // For the three operand imul instruction the target register
@@ -9108,13 +9109,11 @@ DONE:
                 if (instrIs3opImul(ins))
                 {
                     regNumber tgtReg = inst3opImulReg(ins);
-                    emitGCregDeadUpd(tgtReg, dst);
+                    out.GCregDeadUpd(tgtReg);
                 }
             }
         }
     }
-
-    return dst;
 }
 
 /*****************************************************************************
@@ -9122,8 +9121,8 @@ DONE:
  *  Output an instruction involving a stack frame value.
  */
 
-template <bool generateCode>
-BYTE* emitter::emitOutputSV(BYTE* dst, instrDesc* id, code_t code, CnsVal* addc)
+template <class Output>
+void emitter::emitOutputSV(Output& out, instrDesc* id, code_t code, CnsVal* addc)
 {
     int  adr;
     int  dsp;
@@ -9179,7 +9178,7 @@ BYTE* emitter::emitOutputSV(BYTE* dst, instrDesc* id, code_t code, CnsVal* addc)
 
             if (size == EA_2BYTE)
             {
-                dst += emitOutputByte(dst, 0x66);
+                out.OutputByte(0x66);
             }
         }
 
@@ -9198,19 +9197,19 @@ BYTE* emitter::emitOutputSV(BYTE* dst, instrDesc* id, code_t code, CnsVal* addc)
         }
         unsigned regcode = insEncodeReg345(ins, reg345, size, &code);
 
-        dst += emitOutputRexOrVexPrefixIfNeeded(ins, dst, code);
+        emitOutputRexOrVexPrefixIfNeeded(out, ins, code);
 
         if (UseVEXEncoding() && (ins != INS_crc32))
         {
             // Emit last opcode byte
             // TODO-XArch-CQ: Right now support 4-byte opcode instructions only
             assert((code & 0xFF) == 0);
-            dst += emitOutputByte(dst, (code >> 8) & 0xFF);
+            out.OutputByte((code >> 8) & 0xFF);
         }
         else
         {
-            dst += emitOutputWord(dst, code >> 16);
-            dst += emitOutputWord(dst, code & 0xFFFF);
+            out.OutputWord(code >> 16);
+            out.OutputWord(code & 0xFFFF);
         }
 
         code = regcode;
@@ -9219,14 +9218,14 @@ BYTE* emitter::emitOutputSV(BYTE* dst, instrDesc* id, code_t code, CnsVal* addc)
     else if (code & 0xFF000000)
     {
         // Output the REX prefix
-        dst += emitOutputRexOrVexPrefixIfNeeded(ins, dst, code);
+        emitOutputRexOrVexPrefixIfNeeded(out, ins, code);
 
         // Output the highest word of the opcode
         // We need to check again because in case of AVX instructions the leading
         // escape byte(s) (e.g. 0x0F) will be encoded as part of VEX prefix.
         if (code & 0xFF000000)
         {
-            dst += emitOutputWord(dst, code >> 16);
+            out.OutputWord(code >> 16);
             code &= 0x0000FFFF;
         }
     }
@@ -9236,14 +9235,14 @@ BYTE* emitter::emitOutputSV(BYTE* dst, instrDesc* id, code_t code, CnsVal* addc)
         assert(ins != INS_bt);
 
         // Output the REX prefix
-        dst += emitOutputRexOrVexPrefixIfNeeded(ins, dst, code);
+        emitOutputRexOrVexPrefixIfNeeded(out, ins, code);
 
         // Output the highest byte of the opcode.
         // We need to check again because in case of AVX instructions the leading
         // escape byte(s) (e.g. 0x0F) will be encoded as part of VEX prefix.
         if (code & 0x00FF0000)
         {
-            dst += emitOutputByte(dst, code >> 16);
+            out.OutputByte(code >> 16);
             code &= 0x0000FFFF;
         }
 
@@ -9273,7 +9272,7 @@ BYTE* emitter::emitOutputSV(BYTE* dst, instrDesc* id, code_t code, CnsVal* addc)
 
             case EA_2BYTE:
                 // Output a size prefix for a 16-bit operand
-                dst += emitOutputByte(dst, 0x66);
+                out.OutputByte(0x66);
                 __fallthrough;
 
             case EA_4BYTE:
@@ -9309,7 +9308,7 @@ BYTE* emitter::emitOutputSV(BYTE* dst, instrDesc* id, code_t code, CnsVal* addc)
     }
 
     // Output the REX prefix
-    dst += emitOutputRexOrVexPrefixIfNeeded(ins, dst, code);
+    emitOutputRexOrVexPrefixIfNeeded(out, ins, code);
 
     // Figure out the variable's frame position
     int varNum = id->idAddr()->iiaLclVar.lvaVarNum();
@@ -9330,26 +9329,26 @@ BYTE* emitter::emitOutputSV(BYTE* dst, instrDesc* id, code_t code, CnsVal* addc)
         {
             if (dspInByte)
             {
-                dst += emitOutputByte(dst, code | 0x45);
-                dst += emitOutputByte(dst, dsp);
+                out.OutputByte(code | 0x45);
+                out.OutputByte(dsp);
             }
             else
             {
-                dst += emitOutputByte(dst, code | 0x85);
-                dst += emitOutputLong(dst, dsp);
+                out.OutputByte(code | 0x85);
+                out.OutputLong(dsp);
             }
         }
         else
         {
             if (dspInByte)
             {
-                dst += emitOutputWord(dst, code | 0x4500);
-                dst += emitOutputByte(dst, dsp);
+                out.OutputWord(code | 0x4500);
+                out.OutputByte(dsp);
             }
             else
             {
-                dst += emitOutputWord(dst, code | 0x8500);
-                dst += emitOutputLong(dst, dsp);
+                out.OutputWord(code | 0x8500);
+                out.OutputLong(dsp);
             }
         }
     }
@@ -9371,21 +9370,21 @@ BYTE* emitter::emitOutputSV(BYTE* dst, instrDesc* id, code_t code, CnsVal* addc)
             {
                 if (dspIsZero)
                 {
-                    dst += emitOutputByte(dst, code | 0x04);
-                    dst += emitOutputByte(dst, 0x24);
+                    out.OutputByte(code | 0x04);
+                    out.OutputByte(0x24);
                 }
                 else
                 {
-                    dst += emitOutputByte(dst, code | 0x44);
-                    dst += emitOutputByte(dst, 0x24);
-                    dst += emitOutputByte(dst, dsp);
+                    out.OutputByte(code | 0x44);
+                    out.OutputByte(0x24);
+                    out.OutputByte(dsp);
                 }
             }
             else
             {
-                dst += emitOutputByte(dst, code | 0x84);
-                dst += emitOutputByte(dst, 0x24);
-                dst += emitOutputLong(dst, dsp);
+                out.OutputByte(code | 0x84);
+                out.OutputByte(0x24);
+                out.OutputLong(dsp);
             }
         }
         else
@@ -9394,21 +9393,21 @@ BYTE* emitter::emitOutputSV(BYTE* dst, instrDesc* id, code_t code, CnsVal* addc)
             {
                 if (dspIsZero)
                 {
-                    dst += emitOutputWord(dst, code | 0x0400);
-                    dst += emitOutputByte(dst, 0x24);
+                    out.OutputWord(code | 0x0400);
+                    out.OutputByte(0x24);
                 }
                 else
                 {
-                    dst += emitOutputWord(dst, code | 0x4400);
-                    dst += emitOutputByte(dst, 0x24);
-                    dst += emitOutputByte(dst, dsp);
+                    out.OutputWord(code | 0x4400);
+                    out.OutputByte(0x24);
+                    out.OutputByte(dsp);
                 }
             }
             else
             {
-                dst += emitOutputWord(dst, code | 0x8400);
-                dst += emitOutputByte(dst, 0x24);
-                dst += emitOutputLong(dst, dsp);
+                out.OutputWord(code | 0x8400);
+                out.OutputByte(0x24);
+                out.OutputLong(dsp);
             }
         }
     }
@@ -9420,7 +9419,7 @@ BYTE* emitter::emitOutputSV(BYTE* dst, instrDesc* id, code_t code, CnsVal* addc)
 
 #ifdef _TARGET_AMD64_
         // all these opcodes only take a sign-extended 4-byte immediate
-        noway_assert(opsz < 8 || ((int)cval == cval && !addc->cnsReloc));
+        out.Noway(opsz < 8 || ((int)cval == cval && !addc->cnsReloc));
 #endif
 
         switch (opsz)
@@ -9428,27 +9427,27 @@ BYTE* emitter::emitOutputSV(BYTE* dst, instrDesc* id, code_t code, CnsVal* addc)
             case 0:
             case 4:
             case 8:
-                dst += emitOutputLong(dst, cval);
+                out.OutputLong(cval);
                 break;
             case 2:
-                dst += emitOutputWord(dst, cval);
+                out.OutputWord(cval);
                 break;
             case 1:
-                dst += emitOutputByte(dst, cval);
+                out.OutputByte(cval);
                 break;
 
             default:
                 assert(!"unexpected operand size");
         }
 
-        if (generateCode && addc->cnsReloc)
+        if (addc->cnsReloc)
         {
-            emitRecordRelocation((void*)(dst - sizeof(INT32)), (void*)(size_t)cval, IMAGE_REL_BASED_HIGHLOW);
+            out.RecordRelocation((void*)(size_t)cval, IMAGE_REL_BASED_HIGHLOW);
             assert(opsz == 4);
         }
     }
 
-    if (generateCode)
+    if (out.IsEncoding())
     {
         // Does this instruction operate on a GC ref value?
         if (id->idGCref())
@@ -9464,7 +9463,7 @@ BYTE* emitter::emitOutputSV(BYTE* dst, instrDesc* id, code_t code, CnsVal* addc)
 
                 case IF_SWR: // Stack Write (So we need to update GC live for stack var)
                     // Write stack                    -- GC var may be born
-                    emitGCvarLiveUpd(adr, varNum, id->idGCref(), dst);
+                    out.GCvarLiveUpd(adr, varNum, id->idGCref());
                     break;
 
                 case IF_SRD_CNS:
@@ -9483,12 +9482,12 @@ BYTE* emitter::emitOutputSV(BYTE* dst, instrDesc* id, code_t code, CnsVal* addc)
                 case IF_RWR_SRD: // Register Write, Stack Read (So we need to update GC live for register)
 
                     // Read  stack   , write register -- GC reg may be born
-                    emitGCregLiveUpd(id->idGCref(), id->idReg1(), dst);
+                    out.GCregLiveUpd(id->idGCref(), id->idReg1());
                     break;
 
                 case IF_SWR_RRD: // Stack Write, Register Read (So we need to update GC live for stack var)
                     // Read  register, write stack    -- GC var may be born
-                    emitGCvarLiveUpd(adr, varNum, id->idGCref(), dst);
+                    out.GCvarLiveUpd(adr, varNum, id->idGCref());
                     break;
 
                 case IF_RRW_SRD: // Register Read/Write, Stack Read (So we need to update GC live for register)
@@ -9496,7 +9495,7 @@ BYTE* emitter::emitOutputSV(BYTE* dst, instrDesc* id, code_t code, CnsVal* addc)
                     // reg could have been a GCREF as GCREF + int=BYREF
                     //                             or BYREF+/-int=BYREF
                     assert(id->idGCref() == GCT_BYREF && (ins == INS_add || ins == INS_sub));
-                    emitGCregLiveUpd(id->idGCref(), id->idReg1(), dst);
+                    out.GCregLiveUpd(id->idGCref(), id->idReg1());
                     break;
 
                 case IF_SRW_CNS:
@@ -9522,7 +9521,7 @@ BYTE* emitter::emitOutputSV(BYTE* dst, instrDesc* id, code_t code, CnsVal* addc)
                     case IF_RWR_SRD: // Register Write, Stack Read
                     case IF_RRW_SRD: // Register Read/Write, Stack Read
                     case IF_RWR_RRD_SRD:
-                        emitGCregDeadUpd(id->idReg1(), dst);
+                        out.GCregDeadUpd(id->idReg1());
                         break;
                     default:
                         break;
@@ -9530,8 +9529,8 @@ BYTE* emitter::emitOutputSV(BYTE* dst, instrDesc* id, code_t code, CnsVal* addc)
 
                 if (ins == INS_mulEAX || ins == INS_imulEAX)
                 {
-                    emitGCregDeadUpd(REG_EAX, dst);
-                    emitGCregDeadUpd(REG_EDX, dst);
+                    out.GCregDeadUpd(REG_EAX);
+                    out.GCregDeadUpd(REG_EDX);
                 }
 
                 // For the three operand imul instruction the target register
@@ -9540,13 +9539,11 @@ BYTE* emitter::emitOutputSV(BYTE* dst, instrDesc* id, code_t code, CnsVal* addc)
                 if (instrIs3opImul(ins))
                 {
                     regNumber tgtReg = inst3opImulReg(ins);
-                    emitGCregDeadUpd(tgtReg, dst);
+                    out.GCregDeadUpd(tgtReg);
                 }
             }
         }
     }
-
-    return dst;
 }
 
 /*****************************************************************************
@@ -9554,8 +9551,8 @@ BYTE* emitter::emitOutputSV(BYTE* dst, instrDesc* id, code_t code, CnsVal* addc)
  *  Output an instruction with a static data member (class variable).
  */
 
-template <bool generateCode>
-BYTE* emitter::emitOutputCV(BYTE* dst, instrDesc* id, code_t code, CnsVal* addc)
+template <class Output>
+void emitter::emitOutputCV(Output& out, instrDesc* id, code_t code, CnsVal* addc)
 {
     BYTE*                addr;
     CORINFO_FIELD_HANDLE fldh;
@@ -9574,7 +9571,7 @@ BYTE* emitter::emitOutputCV(BYTE* dst, instrDesc* id, code_t code, CnsVal* addc)
     // Special case: mov reg, fs:[ddd]
     if (fldh == FLD_GLOBAL_FS)
     {
-        dst += emitOutputByte(dst, 0x64);
+        out.OutputByte(0x64);
     }
 
     // Compute VEX prefix
@@ -9652,7 +9649,7 @@ BYTE* emitter::emitOutputCV(BYTE* dst, instrDesc* id, code_t code, CnsVal* addc)
 
             if (size == EA_2BYTE)
             {
-                dst += emitOutputByte(dst, 0x66);
+                out.OutputByte(0x66);
             }
         }
 
@@ -9671,48 +9668,48 @@ BYTE* emitter::emitOutputCV(BYTE* dst, instrDesc* id, code_t code, CnsVal* addc)
         }
         unsigned regcode = insEncodeReg345(ins, reg345, size, &code);
 
-        dst += emitOutputRexOrVexPrefixIfNeeded(ins, dst, code);
+        emitOutputRexOrVexPrefixIfNeeded(out, ins, code);
 
         if (UseVEXEncoding() && (ins != INS_crc32))
         {
             // Emit last opcode byte
             // TODO-XArch-CQ: Right now support 4-byte opcode instructions only
             assert((code & 0xFF) == 0);
-            dst += emitOutputByte(dst, (code >> 8) & 0xFF);
+            out.OutputByte((code >> 8) & 0xFF);
         }
         else
         {
-            dst += emitOutputWord(dst, code >> 16);
-            dst += emitOutputWord(dst, code & 0xFFFF);
+            out.OutputWord(code >> 16);
+            out.OutputWord(code & 0xFFFF);
         }
 
         // Emit Mod,R/M byte
-        dst += emitOutputByte(dst, regcode | 0x05);
+        out.OutputByte(regcode | 0x05);
         code = 0;
     }
     // Is this a 'big' opcode?
     else if (code & 0xFF000000)
     {
         // Output the REX prefix
-        dst += emitOutputRexOrVexPrefixIfNeeded(ins, dst, code);
+        emitOutputRexOrVexPrefixIfNeeded(out, ins, code);
 
         // Output the highest word of the opcode.
         // Check again since AVX instructions encode leading opcode bytes as part of VEX prefix.
         if (code & 0xFF000000)
         {
-            dst += emitOutputWord(dst, code >> 16);
+            out.OutputWord(code >> 16);
         }
         code &= 0x0000FFFF;
     }
     else if (code & 0x00FF0000)
     {
         // Output the REX prefix
-        dst += emitOutputRexOrVexPrefixIfNeeded(ins, dst, code);
+        emitOutputRexOrVexPrefixIfNeeded(out, ins, code);
 
         // Check again as VEX prefix would have encoded leading opcode byte
         if (code & 0x00FF0000)
         {
-            dst += emitOutputByte(dst, code >> 16);
+            out.OutputByte(code >> 16);
             code &= 0x0000FFFF;
         }
 
@@ -9743,7 +9740,7 @@ BYTE* emitter::emitOutputCV(BYTE* dst, instrDesc* id, code_t code, CnsVal* addc)
 
             case EA_2BYTE:
                 // Output a size prefix for a 16-bit operand
-                dst += emitOutputByte(dst, 0x66);
+                out.OutputByte(0x66);
                 __fallthrough;
 
             case EA_4BYTE:
@@ -9767,17 +9764,17 @@ BYTE* emitter::emitOutputCV(BYTE* dst, instrDesc* id, code_t code, CnsVal* addc)
     }
 
     // Output the REX prefix
-    dst += emitOutputRexOrVexPrefixIfNeeded(ins, dst, code);
+    emitOutputRexOrVexPrefixIfNeeded(out, ins, code);
 
     if (code)
     {
         if (id->idInsFmt() == IF_MRD_OFF || id->idInsFmt() == IF_RWR_MRD_OFF || isMoffset)
         {
-            dst += emitOutputByte(dst, code);
+            out.OutputByte(code);
         }
         else
         {
-            dst += emitOutputWord(dst, code);
+            out.OutputWord(code);
         }
     }
 
@@ -9785,7 +9782,7 @@ BYTE* emitter::emitOutputCV(BYTE* dst, instrDesc* id, code_t code, CnsVal* addc)
     doff = Compiler::eeGetJitDataOffs(fldh);
     if (doff >= 0)
     {
-        if (generateCode)
+        if (out.IsEncoding())
         {
             addr = emitConsBlock + doff;
         }
@@ -9819,7 +9816,7 @@ BYTE* emitter::emitOutputCV(BYTE* dst, instrDesc* id, code_t code, CnsVal* addc)
         }
         else
         {
-            if (generateCode)
+            if (out.IsEncoding())
             {
                 addr = (BYTE*)emitComp->info.compCompHnd->getFieldAddress(fldh, nullptr);
                 if (addr == nullptr)
@@ -9850,9 +9847,9 @@ BYTE* emitter::emitOutputCV(BYTE* dst, instrDesc* id, code_t code, CnsVal* addc)
 
 #ifdef _TARGET_AMD64_
             // all these opcodes only take a sign-extended 4-byte immediate
-            noway_assert(opsz < 8 || ((int)cval == cval && !addc->cnsReloc));
+            out.Noway(opsz < 8 || ((int)cval == cval && !addc->cnsReloc));
 #else  //_TARGET_X86_
-            noway_assert(opsz <= 4);
+            out.Noway(opsz <= 4);
 #endif //_TARGET_X86_
 
             switch (opsz)
@@ -9877,15 +9874,15 @@ BYTE* emitter::emitOutputCV(BYTE* dst, instrDesc* id, code_t code, CnsVal* addc)
 
 #ifdef _TARGET_AMD64_
         // All static field and data section constant accesses should be marked as relocatable
-        noway_assert(id->idIsDspReloc());
-        dst += emitOutputLong(dst, 0);
+        out.Noway(id->idIsDspReloc());
+        out.OutputLong(0);
 #else  //_TARGET_X86_
-        dst += emitOutputLong(dst, (int)target);
+        out.OutputLong((int)target);
 #endif //_TARGET_X86_
 
-        if (generateCode && id->idIsDspReloc())
+        if (id->idIsDspReloc())
         {
-            emitRecordRelocation((void*)(dst - sizeof(int)), target, IMAGE_REL_BASED_DISP32, 0, addlDelta);
+            out.RecordRelocation(target, IMAGE_REL_BASED_DISP32, 0, addlDelta);
         }
     }
     else
@@ -9899,9 +9896,9 @@ BYTE* emitter::emitOutputCV(BYTE* dst, instrDesc* id, code_t code, CnsVal* addc)
 
         dst += emitOutputSizeT(dst, (ssize_t)target);
 
-        if (generateCode && id->idIsDspReloc())
+        if (id->idIsDspReloc())
         {
-            emitRecordRelocation((void*)(dst - TARGET_POINTER_SIZE), target, IMAGE_REL_BASED_MOFFSET);
+            out.RecordRelocation(target, IMAGE_REL_BASED_MOFFSET);
         }
 
 #endif //_TARGET_X86_
@@ -9914,7 +9911,7 @@ BYTE* emitter::emitOutputCV(BYTE* dst, instrDesc* id, code_t code, CnsVal* addc)
 
 #ifdef _TARGET_AMD64_
         // all these opcodes only take a sign-extended 4-byte immediate
-        noway_assert(opsz < 8 || ((int)cval == cval && !addc->cnsReloc));
+        out.Noway(opsz < 8 || ((int)cval == cval && !addc->cnsReloc));
 #endif
 
         switch (opsz)
@@ -9922,104 +9919,97 @@ BYTE* emitter::emitOutputCV(BYTE* dst, instrDesc* id, code_t code, CnsVal* addc)
             case 0:
             case 4:
             case 8:
-                dst += emitOutputLong(dst, cval);
+                out.OutputLong(cval);
                 break;
             case 2:
-                dst += emitOutputWord(dst, cval);
+                out.OutputWord(cval);
                 break;
             case 1:
-                dst += emitOutputByte(dst, cval);
+                out.OutputByte(cval);
                 break;
 
             default:
                 assert(!"unexpected operand size");
         }
-        if (generateCode && addc->cnsReloc)
+        if (addc->cnsReloc)
         {
-            emitRecordRelocation((void*)(dst - sizeof(INT32)), (void*)(size_t)cval, IMAGE_REL_BASED_HIGHLOW);
+            out.RecordRelocation((void*)(size_t)cval, IMAGE_REL_BASED_HIGHLOW);
             assert(opsz == 4);
         }
     }
 
-    if (generateCode)
+    // Does this instruction operate on a GC ref value?
+    if (id->idGCref())
     {
-        // Does this instruction operate on a GC ref value?
-        if (id->idGCref())
+        switch (id->idInsFmt())
+        {
+            case IF_MRD:
+            case IF_MRW:
+            case IF_MWR:
+                break;
+
+            case IF_RRD_MRD:
+                break;
+
+            case IF_RWR_MRD:
+                out.GCregLiveUpd(id->idGCref(), id->idReg1());
+                break;
+
+            case IF_MRD_RRD:
+            case IF_MWR_RRD:
+            case IF_MRW_RRD:
+                break;
+
+            case IF_MRD_CNS:
+            case IF_MWR_CNS:
+            case IF_MRW_CNS:
+                break;
+
+            case IF_RRW_MRD:
+
+                assert(id->idGCref() == GCT_BYREF);
+                assert(ins == INS_add || ins == INS_sub);
+
+                // Mark it as holding a GCT_BYREF
+                out.GCregLiveUpd(GCT_BYREF, id->idReg1());
+                break;
+
+            default:
+                INDEBUG(out.DispIns(id, false, false, false);)
+                assert(!"unexpected GC ref instruction format");
+        }
+    }
+    else
+    {
+        if (!emitInsCanOnlyWriteSSE2OrAVXReg(id))
         {
             switch (id->idInsFmt())
             {
-                case IF_MRD:
-                case IF_MRW:
-                case IF_MWR:
-                    break;
-
-                case IF_RRD_MRD:
-                    break;
-
                 case IF_RWR_MRD:
-                    emitGCregLiveUpd(id->idGCref(), id->idReg1(), dst);
-                    break;
-
-                case IF_MRD_RRD:
-                case IF_MWR_RRD:
-                case IF_MRW_RRD:
-                    break;
-
-                case IF_MRD_CNS:
-                case IF_MWR_CNS:
-                case IF_MRW_CNS:
-                    break;
-
                 case IF_RRW_MRD:
-
-                    assert(id->idGCref() == GCT_BYREF);
-                    assert(ins == INS_add || ins == INS_sub);
-
-                    // Mark it as holding a GCT_BYREF
-                    emitGCregLiveUpd(GCT_BYREF, id->idReg1(), dst);
+                case IF_RWR_RRD_MRD:
+                    out.GCregDeadUpd(id->idReg1());
                     break;
-
                 default:
-#ifdef DEBUG
-                    emitDispIns(id, false, false, false);
-#endif
-                    assert(!"unexpected GC ref instruction format");
+                    break;
             }
-        }
-        else
-        {
-            if (!emitInsCanOnlyWriteSSE2OrAVXReg(id))
+
+            if (ins == INS_mulEAX || ins == INS_imulEAX)
             {
-                switch (id->idInsFmt())
-                {
-                    case IF_RWR_MRD:
-                    case IF_RRW_MRD:
-                    case IF_RWR_RRD_MRD:
-                        emitGCregDeadUpd(id->idReg1(), dst);
-                        break;
-                    default:
-                        break;
-                }
+                out.GCregDeadUpd(REG_EAX);
+                out.GCregDeadUpd(REG_EDX);
+            }
 
-                if (ins == INS_mulEAX || ins == INS_imulEAX)
-                {
-                    emitGCregDeadUpd(REG_EAX, dst);
-                    emitGCregDeadUpd(REG_EDX, dst);
-                }
+            // For the three operand imul instruction the target register
+            // is encoded in the opcode
 
-                // For the three operand imul instruction the target register
-                // is encoded in the opcode
-
-                if (instrIs3opImul(ins))
-                {
-                    regNumber tgtReg = inst3opImulReg(ins);
-                    emitGCregDeadUpd(tgtReg, dst);
-                }
+            if (instrIs3opImul(ins))
+            {
+                regNumber tgtReg = inst3opImulReg(ins);
+                out.GCregDeadUpd(tgtReg);
             }
         }
     }
-
-    return dst;
 }
 
 /*****************************************************************************
@@ -10027,8 +10017,8 @@ BYTE* emitter::emitOutputCV(BYTE* dst, instrDesc* id, code_t code, CnsVal* addc)
  *  Output an instruction with one register operand.
  */
 
-template <bool generateCode>
-BYTE* emitter::emitOutputR(BYTE* dst, instrDesc* id)
+template <class Output>
+void emitter::emitOutputR(Output& out, instrDesc* id)
 {
     code_t code;
 
@@ -10060,7 +10050,7 @@ BYTE* emitter::emitOutputR(BYTE* dst, instrDesc* id)
                 if (size == EA_2BYTE)
                 {
                     // Output a size prefix for a 16-bit operand
-                    dst += emitOutputByte(dst, 0x66);
+                    out.OutputByte(0x66);
                 }
 
                 code = insCodeRR(ins);
@@ -10079,18 +10069,18 @@ BYTE* emitter::emitOutputR(BYTE* dst, instrDesc* id)
                 unsigned regcode = insEncodeReg012(ins, reg, size, &code);
 
                 // Output the REX prefix
-                dst += emitOutputRexOrVexPrefixIfNeeded(ins, dst, code);
+                emitOutputRexOrVexPrefixIfNeeded(out, ins, code);
 
-                dst += emitOutputWord(dst, code | (regcode << 8));
+                out.OutputWord(code | (regcode << 8));
             }
             else
             {
                 if (size == EA_2BYTE)
                 {
                     // Output a size prefix for a 16-bit operand
-                    dst += emitOutputByte(dst, 0x66);
+                    out.OutputByte(0x66);
                 }
-                dst += emitOutputByte(dst, insCodeRR(ins) | insEncodeReg012(ins, reg, size, nullptr));
+                out.OutputByte(insCodeRR(ins) | insEncodeReg012(ins, reg, size, nullptr));
             }
             break;
 
@@ -10106,9 +10096,9 @@ BYTE* emitter::emitOutputR(BYTE* dst, instrDesc* id)
             assert(!TakesRexWPrefix(ins, size));
 
             // Output the REX prefix
-            dst += emitOutputRexOrVexPrefixIfNeeded(ins, dst, code);
+            emitOutputRexOrVexPrefixIfNeeded(out, ins, code);
 
-            dst += emitOutputByte(dst, code);
+            out.OutputByte(code);
             break;
 
         case INS_bswap:
@@ -10131,9 +10121,9 @@ BYTE* emitter::emitOutputR(BYTE* dst, instrDesc* id)
             unsigned regcode = insEncodeReg012(ins, reg, size, &code);
 
             // Output the REX prefix
-            dst += emitOutputRexOrVexPrefixIfNeeded(ins, dst, code);
+            emitOutputRexOrVexPrefixIfNeeded(out, ins, code);
 
-            dst += emitOutputWord(dst, code | (regcode << 8));
+            out.OutputWord(code | (regcode << 8));
             break;
         }
 
@@ -10160,26 +10150,21 @@ BYTE* emitter::emitOutputR(BYTE* dst, instrDesc* id)
             code = insEncodeMRreg(ins, reg, EA_1BYTE, insCodeMR(ins));
 
             // Output the REX prefix
-            dst += emitOutputRexOrVexPrefixIfNeeded(ins, dst, code);
+            emitOutputRexOrVexPrefixIfNeeded(out, ins, code);
 
             // We expect this to always be a 'big' opcode
             assert(code & 0x00FF0000);
 
-            dst += emitOutputByte(dst, code >> 16);
-            dst += emitOutputWord(dst, code & 0x0000FFFF);
+            out.OutputByte(code >> 16);
+            out.OutputWord(code & 0x0000FFFF);
 
             break;
 
         case INS_mulEAX:
         case INS_imulEAX:
-
-            if (generateCode)
-            {
-                // Kill off any GC refs in EAX or EDX
-                emitGCregDeadUpd(REG_EAX, dst);
-                emitGCregDeadUpd(REG_EDX, dst);
-            }
-
+            // Kill off any GC refs in EAX or EDX
+            out.GCregDeadUpd(REG_EAX);
+            out.GCregDeadUpd(REG_EDX);
             __fallthrough;
 
         default:
@@ -10196,7 +10181,7 @@ BYTE* emitter::emitOutputR(BYTE* dst, instrDesc* id)
                 if (size == EA_2BYTE)
                 {
                     // Output a size prefix for a 16-bit operand
-                    dst += emitOutputByte(dst, 0x66);
+                    out.OutputByte(0x66);
                 }
             }
 
@@ -10208,13 +10193,13 @@ BYTE* emitter::emitOutputR(BYTE* dst, instrDesc* id)
             }
 
             // Output the REX prefix
-            dst += emitOutputRexOrVexPrefixIfNeeded(ins, dst, code);
+            emitOutputRexOrVexPrefixIfNeeded(out, ins, code);
 
-            dst += emitOutputWord(dst, code);
+            out.OutputWord(code);
             break;
     }
 
-    if (generateCode)
+    if (out.IsEncoding())
     {
         // Are we writing the register? if so then update the GC information
         switch (id->idInsFmt())
@@ -10224,11 +10209,11 @@ BYTE* emitter::emitOutputR(BYTE* dst, instrDesc* id)
             case IF_RWR:
                 if (id->idGCref())
                 {
-                    emitGCregLiveUpd(id->idGCref(), id->idReg1(), dst);
+                    out.GCregLiveUpd(id->idGCref(), id->idReg1());
                 }
                 else
                 {
-                    emitGCregDeadUpd(id->idReg1(), dst);
+                    out.GCregDeadUpd(id->idReg1());
                 }
                 break;
             case IF_RRW:
@@ -10244,7 +10229,7 @@ BYTE* emitter::emitOutputR(BYTE* dst, instrDesc* id)
                            (ins == INS_inc || ins == INS_dec || ins == INS_inc_l || ins == INS_dec_l));
                     assert(id->idGCref() == GCT_BYREF);
                     // Mark it as holding a GCT_BYREF
-                    emitGCregLiveUpd(GCT_BYREF, id->idReg1(), dst);
+                    out.GCregLiveUpd(GCT_BYREF, id->idReg1());
                 }
                 else
                 {
@@ -10255,15 +10240,11 @@ BYTE* emitter::emitOutputR(BYTE* dst, instrDesc* id)
             }
             break;
             default:
-#ifdef DEBUG
-                emitDispIns(id, false, false, false);
-#endif
+                INDEBUG(out.DispIns(id, false, false, false);)
                 assert(!"unexpected instruction format");
                 break;
         }
     }
-
-    return dst;
 }
 
 /*****************************************************************************
@@ -10271,8 +10252,8 @@ BYTE* emitter::emitOutputR(BYTE* dst, instrDesc* id)
  *  Output an instruction with two register operands.
  */
 
-template <bool generateCode>
-BYTE* emitter::emitOutputRR(BYTE* dst, instrDesc* id)
+template <class Output>
+void emitter::emitOutputRR(Output& out, instrDesc* id)
 {
     code_t code;
 
@@ -10322,7 +10303,7 @@ BYTE* emitter::emitOutputRR(BYTE* dst, instrDesc* id)
         if (size == EA_2BYTE)
         {
             assert(ins == INS_crc32);
-            dst += emitOutputByte(dst, 0x66);
+            out.OutputByte(0x66);
         }
         else if (size == EA_8BYTE)
         {
@@ -10342,13 +10323,13 @@ BYTE* emitter::emitOutputRR(BYTE* dst, instrDesc* id)
         switch (size)
         {
             case EA_1BYTE:
-                noway_assert(RBM_BYTE_REGS & genRegMask(reg1));
-                noway_assert(RBM_BYTE_REGS & genRegMask(reg2));
+                out.Noway(RBM_BYTE_REGS & genRegMask(reg1));
+                out.Noway(RBM_BYTE_REGS & genRegMask(reg2));
                 break;
 
             case EA_2BYTE:
                 // Output a size prefix for a 16-bit operand
-                dst += emitOutputByte(dst, 0x66);
+                out.OutputByte(0x66);
                 __fallthrough;
 
             case EA_4BYTE:
@@ -10410,47 +10391,47 @@ BYTE* emitter::emitOutputRR(BYTE* dst, instrDesc* id)
     }
 
     // Output the REX prefix
-    dst += emitOutputRexOrVexPrefixIfNeeded(ins, dst, code);
+    emitOutputRexOrVexPrefixIfNeeded(out, ins, code);
 
     if (code & 0xFF000000)
     {
         // Output the highest word of the opcode
-        dst += emitOutputWord(dst, code >> 16);
+        out.OutputWord(code >> 16);
         code &= 0x0000FFFF;
 
         if (Is4ByteSSEInstruction(ins))
         {
             // Output 3rd byte of the opcode
-            dst += emitOutputByte(dst, code);
+            out.OutputByte(code);
             code &= 0xFF00;
         }
     }
     else if (code & 0x00FF0000)
     {
-        dst += emitOutputByte(dst, code >> 16);
+        out.OutputByte(code >> 16);
         code &= 0x0000FFFF;
     }
 
     // TODO-XArch-CQ: Right now support 4-byte opcode instructions only
     if ((code & 0xFF00) == 0xC000)
     {
-        dst += emitOutputWord(dst, code | (regCode << 8));
+        out.OutputWord(code | (regCode << 8));
     }
     else if ((code & 0xFF) == 0x00)
     {
         // This case happens for some SSE/AVX instructions only
         assert(IsAVXInstruction(ins) || Is4ByteSSEInstruction(ins));
 
-        dst += emitOutputByte(dst, (code >> 8) & 0xFF);
-        dst += emitOutputByte(dst, (0xC0 | regCode));
+        out.OutputByte((code >> 8) & 0xFF);
+        out.OutputByte((0xC0 | regCode));
     }
     else
     {
-        dst += emitOutputWord(dst, code);
-        dst += emitOutputByte(dst, (0xC0 | regCode));
+        out.OutputWord(code);
+        out.OutputByte((0xC0 | regCode));
     }
 
-    if (generateCode)
+    if (out.IsEncoding())
     {
         // Does this instruction operate on a GC ref value?
         if (id->idGCref())
@@ -10471,7 +10452,7 @@ BYTE* emitter::emitOutputRR(BYTE* dst, instrDesc* id)
 
                         if (emitFullGCinfo)
                         {
-                            emitGCregLiveSet(id->idGCref(), genRegMask(reg1), dst, true);
+                            out.GCregLiveSet(id->idGCref(), genRegMask(reg1), true);
                             break;
                         }
                         else
@@ -10483,7 +10464,7 @@ BYTE* emitter::emitOutputRR(BYTE* dst, instrDesc* id)
                         }
                     }
 
-                    emitGCregLiveUpd(id->idGCref(), id->idReg1(), dst);
+                    out.GCregLiveUpd(id->idGCref(), id->idReg1());
                     break;
 
                 case IF_RRW_RRD:
@@ -10504,12 +10485,12 @@ BYTE* emitter::emitOutputRR(BYTE* dst, instrDesc* id)
                         */
                         case INS_xor:
                             assert(id->idReg1() == id->idReg2());
-                            emitGCregLiveUpd(id->idGCref(), id->idReg1(), dst);
+                            out.GCregLiveUpd(id->idGCref(), id->idReg1());
                             break;
 
                         case INS_or:
                         case INS_and:
-                            emitGCregDeadUpd(id->idReg1(), dst);
+                            out.GCregDeadUpd(id->idReg1());
                             break;
 
                         case INS_add:
@@ -10526,13 +10507,11 @@ BYTE* emitter::emitOutputRR(BYTE* dst, instrDesc* id)
                                    ((regMask & emitThisByrefRegs) && (ins == INS_add || ins == INS_sub)));
 #endif
                             // Mark r1 as holding a byref
-                            emitGCregLiveUpd(GCT_BYREF, id->idReg1(), dst);
+                            out.GCregLiveUpd(GCT_BYREF, id->idReg1());
                             break;
 
                         default:
-#ifdef DEBUG
-                            emitDispIns(id, false, false, false);
-#endif
+                            INDEBUG(out.DispIns(id, false, false, false);)
                             assert(!"unexpected GC reg update instruction");
                     }
 
@@ -10556,32 +10535,30 @@ BYTE* emitter::emitOutputRR(BYTE* dst, instrDesc* id)
 
                         if (needsGC(gc1))
                         {
-                            emitGCregDeadUpd(reg1, dst);
+                            out.GCregDeadUpd(reg1);
                         }
 
                         if (needsGC(gc2))
                         {
-                            emitGCregDeadUpd(reg2, dst);
+                            out.GCregDeadUpd(reg2);
                         }
 
                         // Now, swap the info
 
                         if (needsGC(gc1))
                         {
-                            emitGCregLiveUpd(gc1, reg2, dst);
+                            out.GCregLiveUpd(gc1, reg2);
                         }
 
                         if (needsGC(gc2))
                         {
-                            emitGCregLiveUpd(gc2, reg1, dst);
+                            out.GCregLiveUpd(gc2, reg1);
                         }
                     }
                     break;
 
                 default:
-#ifdef DEBUG
-                    emitDispIns(id, false, false, false);
-#endif
+                    INDEBUG(out.DispIns(id, false, false, false);)
                     assert(!"unexpected GC ref instruction format");
             }
         }
@@ -10601,7 +10578,7 @@ BYTE* emitter::emitOutputRR(BYTE* dst, instrDesc* id)
                         if (instrIs3opImul(ins))
                         {
                             regNumber tgtReg = inst3opImulReg(ins);
-                            emitGCregDeadUpd(tgtReg, dst);
+                            out.GCregDeadUpd(tgtReg);
                         }
                         break;
 
@@ -10612,11 +10589,11 @@ BYTE* emitter::emitOutputRR(BYTE* dst, instrDesc* id)
                         // INS_movxmm2i writes to reg2.
                         if (ins == INS_mov_xmm2i)
                         {
-                            emitGCregDeadUpd(id->idReg2(), dst);
+                            out.GCregDeadUpd(id->idReg2());
                         }
                         else
                         {
-                            emitGCregDeadUpd(id->idReg1(), dst);
+                            out.GCregDeadUpd(id->idReg1());
                         }
 
                         break;
@@ -10627,12 +10604,10 @@ BYTE* emitter::emitOutputRR(BYTE* dst, instrDesc* id)
             }
         }
     }
-
-    return dst;
 }
 
-template <bool generateCode>
-BYTE* emitter::emitOutputRRR(BYTE* dst, instrDesc* id)
+template <class Output>
+void emitter::emitOutputRRR(Output& out, instrDesc* id)
 {
     code_t code;
 
@@ -10659,43 +10634,41 @@ BYTE* emitter::emitOutputRRR(BYTE* dst, instrDesc* id)
     code = insEncodeReg3456(ins, src1, size, code);
 
     // Output the REX prefix
-    dst += emitOutputRexOrVexPrefixIfNeeded(ins, dst, code);
+    emitOutputRexOrVexPrefixIfNeeded(out, ins, code);
 
     // Is this a 'big' opcode?
     if (code & 0xFF000000)
     {
         // Output the highest word of the opcode
-        dst += emitOutputWord(dst, code >> 16);
+        out.OutputWord(code >> 16);
         code &= 0x0000FFFF;
     }
     else if (code & 0x00FF0000)
     {
-        dst += emitOutputByte(dst, code >> 16);
+        out.OutputByte(code >> 16);
         code &= 0x0000FFFF;
     }
 
     // TODO-XArch-CQ: Right now support 4-byte opcode instructions only
     if ((code & 0xFF00) == 0xC000)
     {
-        dst += emitOutputWord(dst, code | (regCode << 8));
+        out.OutputWord(code | (regCode << 8));
     }
     else if ((code & 0xFF) == 0x00)
     {
         // This case happens for AVX instructions only
         assert(IsAVXInstruction(ins));
 
-        dst += emitOutputByte(dst, (code >> 8) & 0xFF);
-        dst += emitOutputByte(dst, (0xC0 | regCode));
+        out.OutputByte((code >> 8) & 0xFF);
+        out.OutputByte((0xC0 | regCode));
     }
     else
     {
-        dst += emitOutputWord(dst, code);
-        dst += emitOutputByte(dst, (0xC0 | regCode));
+        out.OutputWord(code);
+        out.OutputByte((0xC0 | regCode));
     }
 
-    noway_assert(!id->idGCref());
-
-    return dst;
+    out.Noway(!id->idGCref());
 }
 
 /*****************************************************************************
@@ -10703,8 +10676,8 @@ BYTE* emitter::emitOutputRRR(BYTE* dst, instrDesc* id)
  *  Output an instruction with a register and constant operands.
  */
 
-template <bool generateCode>
-BYTE* emitter::emitOutputRI(BYTE* dst, instrDesc* id)
+template <class Output>
+void emitter::emitOutputRI(Output& out, instrDesc* id)
 {
     code_t      code;
     emitAttr    size      = id->idOpSize();
@@ -10722,7 +10695,7 @@ BYTE* emitter::emitOutputRI(BYTE* dst, instrDesc* id)
         valInByte = false; // relocs can't be placed in a byte
     }
 
-    noway_assert(emitVerifyEncodable(ins, size, reg));
+    out.Noway(emitVerifyEncodable(ins, size, reg));
 
     if (IsSSEOrAVXInstruction(ins))
     {
@@ -10749,22 +10722,22 @@ BYTE* emitter::emitOutputRI(BYTE* dst, instrDesc* id)
         unsigned regcode = (insEncodeReg345(ins, regOpcode, size, &code) | insEncodeReg012(ins, reg, size, &code)) << 8;
 
         // Output the REX prefix
-        dst += emitOutputRexOrVexPrefixIfNeeded(ins, dst, code);
+        emitOutputRexOrVexPrefixIfNeeded(out, ins, code);
 
         if (code & 0xFF000000)
         {
-            dst += emitOutputWord(dst, code >> 16);
+            out.OutputWord(code >> 16);
         }
         else if (code & 0xFF0000)
         {
-            dst += emitOutputByte(dst, code >> 16);
+            out.OutputByte(code >> 16);
         }
 
-        dst += emitOutputWord(dst, code | regcode);
+        out.OutputWord(code | regcode);
 
-        dst += emitOutputByte(dst, val);
+        out.OutputByte(val);
 
-        return dst;
+        return;
     }
 
     // The 'mov' opcode is special
@@ -10785,24 +10758,24 @@ BYTE* emitter::emitOutputRI(BYTE* dst, instrDesc* id)
             code = AddRexWPrefix(ins, code);
         }
 
-        dst += emitOutputRexOrVexPrefixIfNeeded(ins, dst, code);
+        emitOutputRexOrVexPrefixIfNeeded(out, ins, code);
 
-        dst += emitOutputByte(dst, code);
+        out.OutputByte(code);
         if (size == EA_4BYTE)
         {
-            dst += emitOutputLong(dst, val);
+            out.OutputLong(val);
         }
 #ifdef _TARGET_AMD64_
         else
         {
             assert(size == EA_PTRSIZE);
-            dst += emitOutputSizeT(dst, val);
+            out.OutputSizeT(val);
         }
 #endif
 
-        if (generateCode && id->idIsCnsReloc())
+        if (id->idIsCnsReloc())
         {
-            emitRecordRelocation((void*)(dst - (unsigned)EA_SIZE(size)), (void*)(size_t)val, IMAGE_REL_BASED_MOFFSET);
+            out.RecordRelocation(EA_SIZE(size), (void*)(size_t)val, IMAGE_REL_BASED_MOFFSET);
         }
 
         goto DONE;
@@ -10891,7 +10864,7 @@ BYTE* emitter::emitOutputRI(BYTE* dst, instrDesc* id)
 
         case EA_2BYTE:
             // Output a size prefix for a 16-bit operand
-            dst += emitOutputByte(dst, 0x66);
+            out.OutputByte(0x66);
             __fallthrough;
 
         case EA_4BYTE:
@@ -10914,7 +10887,7 @@ BYTE* emitter::emitOutputRI(BYTE* dst, instrDesc* id)
     }
 
     // Output the REX prefix
-    dst += emitOutputRexOrVexPrefixIfNeeded(ins, dst, code);
+    emitOutputRexOrVexPrefixIfNeeded(out, ins, code);
 
     // Does the value fit in a sign-extended byte?
     // Important!  Only set the 's' bit when we have a size larger than EA_1BYTE.
@@ -10925,132 +10898,123 @@ BYTE* emitter::emitOutputRI(BYTE* dst, instrDesc* id)
         // We can just set the 's' bit, and issue an immediate byte
 
         code |= 0x2; // Set the 's' bit to use a sign-extended immediate byte.
-        dst += emitOutputWord(dst, code);
-        dst += emitOutputByte(dst, val);
+        out.OutputWord(code);
+        out.OutputByte(val);
     }
     else
     {
         // Can we use an accumulator (EAX) encoding?
         if (useACC)
         {
-            dst += emitOutputByte(dst, code);
+            out.OutputByte(code);
         }
         else
         {
-            dst += emitOutputWord(dst, code);
+            out.OutputWord(code);
         }
 
         switch (size)
         {
             case EA_1BYTE:
-                dst += emitOutputByte(dst, val);
+                out.OutputByte(val);
                 break;
             case EA_2BYTE:
-                dst += emitOutputWord(dst, val);
+                out.OutputWord(val);
                 break;
             case EA_4BYTE:
-                dst += emitOutputLong(dst, val);
+                out.OutputLong(val);
                 break;
 #ifdef _TARGET_AMD64_
             case EA_8BYTE:
-                dst += emitOutputLong(dst, val);
+                out.OutputLong(val);
                 break;
 #endif // _TARGET_AMD64_
             default:
                 break;
         }
 
-        if (generateCode && id->idIsCnsReloc())
+        if (id->idIsCnsReloc())
         {
-            emitRecordRelocation((void*)(dst - sizeof(INT32)), (void*)(size_t)val, IMAGE_REL_BASED_HIGHLOW);
+            out.RecordRelocation((void*)(size_t)val, IMAGE_REL_BASED_HIGHLOW);
             assert(size == EA_4BYTE);
         }
     }
 
 DONE:
-    if (generateCode)
+    // Does this instruction operate on a GC ref value?
+    if (id->idGCref())
     {
-        // Does this instruction operate on a GC ref value?
-        if (id->idGCref())
+        switch (id->idInsFmt())
         {
-            switch (id->idInsFmt())
-            {
-                case IF_RRD_CNS:
-                    break;
+            case IF_RRD_CNS:
+                break;
 
-                case IF_RWR_CNS:
-                    emitGCregLiveUpd(id->idGCref(), id->idReg1(), dst);
-                    break;
+            case IF_RWR_CNS:
+                out.GCregLiveUpd(id->idGCref(), id->idReg1());
+                break;
 
-                case IF_RRW_CNS:
-                    assert(id->idGCref() == GCT_BYREF);
+            case IF_RRW_CNS:
+                assert(id->idGCref() == GCT_BYREF);
 
 #ifdef DEBUG
-                    regMaskTP regMask;
-                    regMask = genRegMask(reg);
-                    // FIXNOW review the other places and relax the assert there too
+                regMaskTP regMask;
+                regMask = genRegMask(reg);
+                // FIXNOW review the other places and relax the assert there too
 
-                    // The reg must currently be holding either a gcref or a byref
-                    // GCT_GCREF+int = GCT_BYREF, and GCT_BYREF+/-int = GCT_BYREF
-                    if (emitThisGCrefRegs & regMask)
-                    {
-                        assert(ins == INS_add);
-                    }
-                    if (emitThisByrefRegs & regMask)
-                    {
-                        assert(ins == INS_add || ins == INS_sub);
-                    }
+                // The reg must currently be holding either a gcref or a byref
+                // GCT_GCREF+int = GCT_BYREF, and GCT_BYREF+/-int = GCT_BYREF
+                if (emitThisGCrefRegs & regMask)
+                {
+                    assert(ins == INS_add);
+                }
+                if (emitThisByrefRegs & regMask)
+                {
+                    assert(ins == INS_add || ins == INS_sub);
+                }
 #endif
-                    // Mark it as holding a GCT_BYREF
-                    emitGCregLiveUpd(GCT_BYREF, id->idReg1(), dst);
-                    break;
+                // Mark it as holding a GCT_BYREF
+                out.GCregLiveUpd(GCT_BYREF, id->idReg1());
+                break;
 
-                default:
-#ifdef DEBUG
-                    emitDispIns(id, false, false, false);
-#endif
-                    assert(!"unexpected GC ref instruction format");
-            }
-
-            // mul can never produce a GC ref
-            assert(!instrIs3opImul(ins));
-            assert(ins != INS_mulEAX && ins != INS_imulEAX);
+            default:
+                INDEBUG(out.DispIns(id, false, false, false);)
+                assert(!"unexpected GC ref instruction format");
         }
-        else
+
+        // mul can never produce a GC ref
+        assert(!instrIs3opImul(ins));
+        assert(ins != INS_mulEAX && ins != INS_imulEAX);
+    }
+    else
+    {
+        switch (id->idInsFmt())
         {
-            switch (id->idInsFmt())
-            {
-                case IF_RRD_CNS:
-                    // INS_mulEAX can not be used with any of these formats
-                    assert(ins != INS_mulEAX && ins != INS_imulEAX);
+            case IF_RRD_CNS:
+                // INS_mulEAX can not be used with any of these formats
+                assert(ins != INS_mulEAX && ins != INS_imulEAX);
 
-                    // For the three operand imul instruction the target
-                    // register is encoded in the opcode
+                // For the three operand imul instruction the target
+                // register is encoded in the opcode
 
-                    if (instrIs3opImul(ins))
-                    {
-                        regNumber tgtReg = inst3opImulReg(ins);
-                        emitGCregDeadUpd(tgtReg, dst);
-                    }
-                    break;
+                if (instrIs3opImul(ins))
+                {
+                    regNumber tgtReg = inst3opImulReg(ins);
+                    out.GCregDeadUpd(tgtReg);
+                }
+                break;
 
-                case IF_RRW_CNS:
-                case IF_RWR_CNS:
-                    assert(!instrIs3opImul(ins));
+            case IF_RRW_CNS:
+            case IF_RWR_CNS:
+                assert(!instrIs3opImul(ins));
 
-                    emitGCregDeadUpd(id->idReg1(), dst);
-                    break;
+                out.GCregDeadUpd(id->idReg1());
+                break;
 
-                default:
-#ifdef DEBUG
-                    emitDispIns(id, false, false, false);
-#endif
-                    assert(!"unexpected GC ref instruction format");
-            }
+            default:
+                INDEBUG(out.DispIns(id, false, false, false);)
+                assert(!"unexpected GC ref instruction format");
         }
     }
-
-    return dst;
 }
 
 /*****************************************************************************
@@ -11058,8 +11022,8 @@ DONE:
  *  Output an instruction with a constant operand.
  */
 
-template <bool generateCode>
-BYTE* emitter::emitOutputIV(BYTE* dst, instrDesc* id)
+template <class Output>
+void emitter::emitOutputIV(Output& out, instrDesc* id)
 {
     code_t      code;
     instruction ins       = id->idIns();
@@ -11073,7 +11037,7 @@ BYTE* emitter::emitOutputIV(BYTE* dst, instrDesc* id)
 
 #ifdef _TARGET_AMD64_
     // all these opcodes take a sign-extended 4-byte immediate, max
-    noway_assert(size < EA_8BYTE || ((int)val == val && !id->idIsCnsReloc()));
+    out.Noway(size < EA_8BYTE || ((int)val == val && !id->idIsCnsReloc()));
 #endif
 
     if (id->idIsCnsReloc())
@@ -11088,20 +11052,20 @@ BYTE* emitter::emitOutputIV(BYTE* dst, instrDesc* id)
     {
         case INS_jge:
             assert((val >= -128) && (val <= 127));
-            dst += emitOutputByte(dst, insCode(ins));
-            dst += emitOutputByte(dst, val);
+            out.OutputByte(insCode(ins));
+            out.OutputByte(val);
             break;
 
         case INS_loop:
             assert((val >= -128) && (val <= 127));
-            dst += emitOutputByte(dst, insCodeMI(ins));
-            dst += emitOutputByte(dst, val);
+            out.OutputByte(insCodeMI(ins));
+            out.OutputByte(val);
             break;
 
         case INS_ret:
             assert(val);
-            dst += emitOutputByte(dst, insCodeMI(ins));
-            dst += emitOutputWord(dst, val);
+            out.OutputByte(insCodeMI(ins));
+            out.OutputWord(val);
             break;
 
         case INS_push_hide:
@@ -11111,22 +11075,22 @@ BYTE* emitter::emitOutputIV(BYTE* dst, instrDesc* id)
             // Does the operand fit in a byte?
             if (valInByte)
             {
-                dst += emitOutputByte(dst, code | 2);
-                dst += emitOutputByte(dst, val);
+                out.OutputByte(code | 2);
+                out.OutputByte(val);
             }
             else
             {
                 if (TakesRexWPrefix(ins, size))
                 {
                     code = AddRexWPrefix(ins, code);
-                    dst += emitOutputRexOrVexPrefixIfNeeded(ins, dst, code);
+                    emitOutputRexOrVexPrefixIfNeeded(out, ins, code);
                 }
 
-                dst += emitOutputByte(dst, code);
-                dst += emitOutputLong(dst, val);
-                if (generateCode && id->idIsCnsReloc())
+                out.OutputByte(code);
+                out.OutputLong(val);
+                if (id->idIsCnsReloc())
                 {
-                    emitRecordRelocation((void*)(dst - sizeof(INT32)), (void*)(size_t)val, IMAGE_REL_BASED_HIGHLOW);
+                    out.RecordRelocation((void*)(size_t)val, IMAGE_REL_BASED_HIGHLOW);
                 }
             }
 
@@ -11143,8 +11107,6 @@ BYTE* emitter::emitOutputIV(BYTE* dst, instrDesc* id)
         default:
             assert(!"unexpected instruction");
     }
-
-    return dst;
 }
 
 /*****************************************************************************
@@ -11154,8 +11116,8 @@ BYTE* emitter::emitOutputIV(BYTE* dst, instrDesc* id)
  *  needs to get bound to an actual address and processed by branch shortening.
  */
 
-template <bool generateCode>
-BYTE* emitter::emitOutputLJ(BYTE* dst, instrDesc* i)
+template <class Output>
+void emitter::emitOutputLJ(Output& out, instrDesc* i)
 {
     unsigned srcOffs;
     unsigned dstOffs;
@@ -11208,10 +11170,14 @@ BYTE* emitter::emitOutputLJ(BYTE* dst, instrDesc* i)
             break;
     }
 
-    if (generateCode)
+    if (!out.IsEncoding())
+    {
+        out.OutputSkip(11); // temp solution.
+    }
+    else
     {
         // Figure out the distance to the target
-        srcOffs = emitCurCodeOffs(dst);
+        srcOffs = emitCurCodeOffs(out.GetDestination());
         dstOffs = id->idAddr()->iiaIGlabel->igOffs;
 
         if (relAddr)
@@ -11334,12 +11300,12 @@ BYTE* emitter::emitOutputLJ(BYTE* dst, instrDesc* i)
 #endif
             }
 
-            dst += emitOutputByte(dst, insCode(ins));
+            out.OutputByte(insCode(ins));
 
             // For forward jumps, record the address of the distance value
-            id->idjTemp.idjAddr = (distVal > 0) ? dst : nullptr;
+            id->idjTemp.idjAddr = (distVal > 0) ? out.GetDestination() : nullptr;
 
-            dst += emitOutputByte(dst, distVal);
+            out.OutputByte(distVal);
         }
         else
         {
@@ -11385,7 +11351,7 @@ BYTE* emitter::emitOutputLJ(BYTE* dst, instrDesc* i)
                 id->idAddr()->iiaLclVar = ((instrDescLbl*)id)->dstLclVar;
                 id->idSetIsDspReloc(false);
 
-                dst = emitOutputSV<generateCode>(dst, id, insCodeMI(ins));
+                emitOutputSV(out, id, insCodeMI(ins));
 
                 // Restore id fields with original values
                 id->idInsFmt(tmpInsFmt);
@@ -11423,16 +11389,16 @@ BYTE* emitter::emitOutputLJ(BYTE* dst, instrDesc* i)
                 code = insCodeRM(ins);
                 code |= (insEncodeReg345(ins, id->idReg1(), EA_PTRSIZE, &code) << 8);
 
-                dst = emitOutputAM<generateCode>(dst, idAmd, code, nullptr);
+                emitOutputAM(out, idAmd, code, nullptr);
 
                 code = 0xCC;
 
                 // For forward jumps, record the address of the distance value
                 // Hard-coded 4 here because we already output the displacement, as the last thing.
-                id->idjTemp.idjAddr = (dstOffs > srcOffs) ? (dst - 4) : nullptr;
+                id->idjTemp.idjAddr = (dstOffs > srcOffs) ? (out.GetDestination() - 4) : nullptr;
 
                 // We're done
-                return dst;
+                return;
             }
             else
             {
@@ -11441,53 +11407,41 @@ BYTE* emitter::emitOutputLJ(BYTE* dst, instrDesc* i)
 
             if (ins != INS_mov)
             {
-                dst += emitOutputByte(dst, code);
+                out.OutputByte(code);
 
                 if (code & 0xFF00)
                 {
-                    dst += emitOutputByte(dst, code >> 8);
+                    out.OutputByte(code >> 8);
                 }
             }
 
             // For forward jumps, record the address of the distance value
-            id->idjTemp.idjAddr = (dstOffs > srcOffs) ? dst : nullptr;
+            id->idjTemp.idjAddr = (dstOffs > srcOffs) ? out.GetDestination() : nullptr;
 
-            dst += emitOutputLong(dst, distVal);
+            out.OutputLong(distVal);
 
 #ifndef _TARGET_AMD64_ // all REL32 on AMD have to go through recordRelocation
             if (emitComp->opts.compReloc)
 #endif
             {
-                if (generateCode)
+                if (!relAddr)
                 {
-                    if (!relAddr)
-                    {
-                        emitRecordRelocation((void*)(dst - sizeof(INT32)), (void*)distVal, IMAGE_REL_BASED_HIGHLOW);
-                    }
-                    else if (emitJumpCrossHotColdBoundary(srcOffs, dstOffs))
-                    {
-                        assert(id->idjKeepLong);
-                        emitRecordRelocation((void*)(dst - sizeof(INT32)), dst + distVal, IMAGE_REL_BASED_REL32);
-                    }
+                    out.RecordRelocation((void*)distVal, IMAGE_REL_BASED_HIGHLOW);
+                }
+                else if (emitJumpCrossHotColdBoundary(srcOffs, dstOffs))
+                {
+                    assert(id->idjKeepLong);
+                    out.RecordRelocation(out.GetDestination() + distVal, IMAGE_REL_BASED_REL32);
                 }
             }
         }
 
-        if (generateCode)
+        // Local calls kill all registers
+        if (ins == INS_call && (emitThisGCrefRegs | emitThisByrefRegs))
         {
-            // Local calls kill all registers
-            if (ins == INS_call && (emitThisGCrefRegs | emitThisByrefRegs))
-            {
-                emitGCregDeadUpdMask(emitThisGCrefRegs | emitThisByrefRegs, dst);
-            }
+            out.GCregDeadUpdMask(emitThisGCrefRegs | emitThisByrefRegs);
         }
     }
-    else
-    {
-        dst += 11; // temp solution.
-    }
-
-    return dst;
 }
 
 /*****************************************************************************
@@ -11503,12 +11457,11 @@ BYTE* emitter::emitOutputLJ(BYTE* dst, instrDesc* i)
 #pragma warning(push)
 #pragma warning(disable : 21000) // Suppress PREFast warning about overly large function
 #endif
-template <bool generateCode>
-size_t emitter::emitOutputInstr(insGroup* ig, instrDesc* id, BYTE** dp)
+template <class Output>
+size_t emitter::emitOutputInstr(Output& out, insGroup* ig, instrDesc* id)
 {
-    assert(!generateCode || emitIssuing);
+    assert(!out.IsEncoding() || emitIssuing);
 
-    BYTE*         dst           = *dp;
     size_t        sz            = sizeof(instrDesc);
     instruction   ins           = id->idIns();
     unsigned char callInstrSize = 0;
@@ -11547,27 +11500,22 @@ size_t emitter::emitOutputInstr(insGroup* ig, instrDesc* id, BYTE** dp)
             // the loop alignment pseudo instruction
             if (ins == INS_align)
             {
-                sz  = SMALL_IDSC_SIZE;
-                dst = emitOutputNOP(dst, (-(int)(size_t)dst) & 0x0f);
-                assert(((size_t)dst & 0x0f) == 0);
+                sz = SMALL_IDSC_SIZE;
+                out.Align();
                 break;
             }
 
             if (ins == INS_nop)
             {
                 assert(id->idCodeSize() != 0);
-                dst = emitOutputNOP(dst, id->idCodeSize());
+                out.OutputNOP(id->idCodeSize());
                 break;
             }
 
-            if (generateCode)
+            // the cdq instruction kills the EDX register implicitly
+            if (ins == INS_cdq)
             {
-
-                // the cdq instruction kills the EDX register implicitly
-                if (ins == INS_cdq)
-                {
-                    emitGCregDeadUpd(REG_EDX, dst);
-                }
+                out.GCregDeadUpd(REG_EDX);
             }
 
             assert(id->idGCref() == GCT_NONE);
@@ -11582,32 +11530,32 @@ size_t emitter::emitOutputInstr(insGroup* ig, instrDesc* id, BYTE** dp)
             {
                 code = AddRexWPrefix(ins, code);
             }
-            dst += emitOutputRexOrVexPrefixIfNeeded(ins, dst, code);
+            emitOutputRexOrVexPrefixIfNeeded(out, ins, code);
 #endif
             // Is this a 'big' opcode?
             if (code & 0xFF000000)
             {
                 // The high word and then the low word
-                dst += emitOutputWord(dst, code >> 16);
+                out.OutputWord(code >> 16);
                 code &= 0x0000FFFF;
-                dst += emitOutputWord(dst, code);
+                out.OutputWord(code);
             }
             else if (code & 0x00FF0000)
             {
                 // The high byte and then the low word
-                dst += emitOutputByte(dst, code >> 16);
+                out.OutputByte(code >> 16);
                 code &= 0x0000FFFF;
-                dst += emitOutputWord(dst, code);
+                out.OutputWord(code);
             }
             else if (code & 0xFF00)
             {
                 // The 2 byte opcode
-                dst += emitOutputWord(dst, code);
+                out.OutputWord(code);
             }
             else
             {
                 // The 1 byte opcode
-                dst += emitOutputByte(dst, code);
+                out.OutputByte(code);
             }
 
             break;
@@ -11617,19 +11565,19 @@ size_t emitter::emitOutputInstr(insGroup* ig, instrDesc* id, BYTE** dp)
         /********************************************************************/
 
         case IF_CNS:
-            dst = emitOutputIV<generateCode>(dst, id);
-            sz  = emitSizeOfInsDsc(id);
+            emitOutputIV(out, id);
+            sz = emitSizeOfInsDsc(id);
             break;
 
         case IF_LABEL:
         case IF_RWR_LABEL:
         case IF_SWR_LABEL:
             assert(id->idGCref() == GCT_NONE);
-            assert(!generateCode || id->idIsBound());
+            assert(!out.IsEncoding() || id->idIsBound());
 
             // TODO-XArch-Cleanup: handle IF_RWR_LABEL in emitOutputLJ() or change it to emitOutputAM()?
-            dst = emitOutputLJ<generateCode>(dst, id);
-            sz  = (id->idInsFmt() == IF_SWR_LABEL ? sizeof(instrDescLbl) : sizeof(instrDescJmp));
+            emitOutputLJ(out, id);
+            sz = (id->idInsFmt() == IF_SWR_LABEL ? sizeof(instrDescLbl) : sizeof(instrDescJmp));
             break;
 
         case IF_METHOD:
@@ -11682,34 +11630,34 @@ size_t emitter::emitOutputInstr(insGroup* ig, instrDesc* id, BYTE** dp)
 
                 if (id->idIsDspReloc())
                 {
-                    dst += emitOutputWord(dst, code | 0x0500);
+                    out.OutputWord(code | 0x0500);
 #ifdef _TARGET_AMD64_
-                    dst += emitOutputLong(dst, 0);
+                    out.OutputLong(0);
 #else
-                    dst += emitOutputLong(dst, (int)addr);
+                    out.OutputLong((int)addr);
 #endif
-                    if (generateCode)
+                    if (out.IsEncoding())
                     {
-                        emitRecordRelocation((void*)(dst - sizeof(int)), addr, IMAGE_REL_BASED_DISP32);
+                        out.RecordRelocation(addr, IMAGE_REL_BASED_DISP32);
                     }
                 }
                 else
                 {
 #ifdef _TARGET_X86_
-                    dst += emitOutputWord(dst, code | 0x0500);
+                    out.OutputWord(code | 0x0500);
 #else  //_TARGET_AMD64_
                     // Amd64: addr fits within 32-bits and can be encoded as a displacement relative to zero.
                     // This addr mode should never be used while generating relocatable ngen code nor if
                     // the addr can be encoded as pc-relative address.
-                    noway_assert(!emitComp->opts.compReloc);
-                    noway_assert(codeGen->genAddrRelocTypeHint((size_t)addr) != IMAGE_REL_BASED_REL32);
-                    noway_assert(static_cast<int>(reinterpret_cast<intptr_t>(addr)) == (ssize_t)addr);
+                    out.Noway(!emitComp->opts.compReloc);
+                    out.Noway(codeGen->genAddrRelocTypeHint((size_t)addr) != IMAGE_REL_BASED_REL32);
+                    out.Noway(static_cast<int>(reinterpret_cast<intptr_t>(addr)) == (ssize_t)addr);
 
                     // This requires, specifying a SIB byte after ModRM byte.
-                    dst += emitOutputWord(dst, code | 0x0400);
-                    dst += emitOutputByte(dst, 0x25);
+                    out.OutputWord(code | 0x0400);
+                    out.OutputByte(0x25);
 #endif //_TARGET_AMD64_
-                    dst += emitOutputLong(dst, static_cast<int>(reinterpret_cast<intptr_t>(addr)));
+                    out.OutputLong(static_cast<int>(reinterpret_cast<intptr_t>(addr)));
                 }
                 goto DONE_CALL;
             }
@@ -11720,7 +11668,7 @@ size_t emitter::emitOutputInstr(insGroup* ig, instrDesc* id, BYTE** dp)
             assert(id->idInsFmt() == IF_METHOD);
 
             // Output the call opcode followed by the target distance
-            dst += (ins == INS_l_jmp) ? emitOutputByte(dst, insCode(ins)) : emitOutputByte(dst, insCodeMI(ins));
+            out.OutputByte((ins == INS_l_jmp) ? insCode(ins) : insCodeMI(ins));
 
             ssize_t offset;
 #ifdef _TARGET_AMD64_
@@ -11734,16 +11682,16 @@ size_t emitter::emitOutputInstr(insGroup* ig, instrDesc* id, BYTE** dp)
             offset = addr - (dst + sizeof(INT32));
 #endif
 
-            dst += emitOutputLong(dst, offset);
+            out.OutputLong(offset);
 
-            if (generateCode && id->idIsDspReloc())
+            if (id->idIsDspReloc())
             {
-                emitRecordRelocation((void*)(dst - sizeof(INT32)), addr, IMAGE_REL_BASED_REL32);
+                out.RecordRelocation(addr, IMAGE_REL_BASED_REL32);
             }
 
         DONE_CALL:
 
-            if (generateCode)
+            if (out.IsEncoding())
             {
                 /* We update the GC info before the call as the variables cannot be
                    used by the call. Killing variables before the call helps with
@@ -11751,9 +11699,9 @@ size_t emitter::emitOutputInstr(insGroup* ig, instrDesc* id, BYTE** dp)
                    If we ever track aliased variables (which could be used by the
                    call), we would have to keep them alive past the call.
                  */
-                assert(FitsIn<unsigned char>(dst - *dp));
-                callInstrSize = static_cast<unsigned char>(dst - *dp);
-                emitUpdateLiveGCvars(GCvars, *dp);
+
+                callInstrSize = out.GetCurrentInstructionSize();
+                out.UpdateLiveGCvarsBeforeCall(GCvars);
 
                 // If the method returns a GC ref, mark EAX appropriately
                 if (id->idGCref() == GCT_GCREF)
@@ -11784,12 +11732,12 @@ size_t emitter::emitOutputInstr(insGroup* ig, instrDesc* id, BYTE** dp)
                 // If the GC register set has changed, report the new set
                 if (gcrefRegs != emitThisGCrefRegs)
                 {
-                    emitUpdateLiveGCregs(GCT_GCREF, gcrefRegs, dst);
+                    out.UpdateLiveGCregs(GCT_GCREF, gcrefRegs);
                 }
 
                 if (byrefRegs != emitThisByrefRegs)
                 {
-                    emitUpdateLiveGCregs(GCT_BYREF, byrefRegs, dst);
+                    out.UpdateLiveGCregs(GCT_BYREF, byrefRegs);
                 }
 
                 if (recCall || args)
@@ -11801,11 +11749,11 @@ size_t emitter::emitOutputInstr(insGroup* ig, instrDesc* id, BYTE** dp)
 
                     if (args >= 0)
                     {
-                        emitStackPop(dst, /*isCall*/ true, callInstrSize, args);
+                        out.StackPop(/*isCall*/ true, callInstrSize, args);
                     }
                     else
                     {
-                        emitStackKillArgs(dst, -args, callInstrSize);
+                        out.StackKillArgs(-args, callInstrSize);
                     }
                 }
 
@@ -11813,13 +11761,13 @@ size_t emitter::emitOutputInstr(insGroup* ig, instrDesc* id, BYTE** dp)
                 if (!emitFullGCinfo && recCall)
                 {
                     assert(callInstrSize != 0);
-                    emitRecordGCcall(dst, callInstrSize);
+                    out.RecordGCCall(callInstrSize);
                 }
 
 #ifdef DEBUG
                 if (ins == INS_call)
                 {
-                    emitRecordCallSite(emitCurCodeOffs(*dp), id->idDebugOnlyInfo()->idCallSig,
+                    out.RecordCallSite(id->idDebugOnlyInfo()->idCallSig,
                                        (CORINFO_METHOD_HANDLE)id->idDebugOnlyInfo()->idMemCookie);
                 }
 #endif // DEBUG
@@ -11834,8 +11782,8 @@ size_t emitter::emitOutputInstr(insGroup* ig, instrDesc* id, BYTE** dp)
         case IF_RRD:
         case IF_RWR:
         case IF_RRW:
-            dst = emitOutputR<generateCode>(dst, id);
-            sz  = SMALL_IDSC_SIZE;
+            emitOutputR(out, id);
+            sz = SMALL_IDSC_SIZE;
             break;
 
         /********************************************************************/
@@ -11863,46 +11811,43 @@ size_t emitter::emitOutputInstr(insGroup* ig, instrDesc* id, BYTE** dp)
             // Output a size prefix for a 16-bit operand
             if (size == EA_2BYTE)
             {
-                dst += emitOutputByte(dst, 0x66);
+                out.OutputByte(0x66);
             }
 
-            dst += emitOutputRexOrVexPrefixIfNeeded(ins, dst, code);
-            dst += emitOutputWord(dst, code);
-            dst += emitOutputByte(dst, emitGetInsSC(id));
+            emitOutputRexOrVexPrefixIfNeeded(out, ins, code);
+            out.OutputWord(code);
+            out.OutputByte(emitGetInsSC(id));
             sz = emitSizeOfInsDsc(id);
 
-            if (generateCode)
-            {
-                // Update GC info.
-                assert(!id->idGCref());
-                emitGCregDeadUpd(id->idReg1(), dst);
-            }
+            // Update GC info.
+            assert(!id->idGCref());
+            out.GCregDeadUpd(id->idReg1());
             break;
 
         case IF_RRD_RRD:
         case IF_RWR_RRD:
         case IF_RRW_RRD:
         case IF_RRW_RRW:
-            dst = emitOutputRR<generateCode>(dst, id);
-            sz  = SMALL_IDSC_SIZE;
+            emitOutputRR(out, id);
+            sz = SMALL_IDSC_SIZE;
             break;
 
         case IF_RRD_CNS:
         case IF_RWR_CNS:
         case IF_RRW_CNS:
-            dst = emitOutputRI<generateCode>(dst, id);
-            sz  = emitSizeOfInsDsc(id);
+            emitOutputRI(out, id);
+            sz = emitSizeOfInsDsc(id);
             break;
 
         case IF_RWR_RRD_RRD:
-            dst = emitOutputRRR<generateCode>(dst, id);
-            sz  = emitSizeOfInsDsc(id);
+            emitOutputRRR(out, id);
+            sz = emitSizeOfInsDsc(id);
             break;
         case IF_RWR_RRD_RRD_CNS:
         case IF_RWR_RRD_RRD_RRD:
-            dst = emitOutputRRR<generateCode>(dst, id);
-            sz  = emitSizeOfInsDsc(id);
-            dst += emitOutputByte(dst, emitGetInsSC(id));
+            emitOutputRRR(out, id);
+            sz = emitSizeOfInsDsc(id);
+            out.OutputByte(emitGetInsSC(id));
             break;
 
         case IF_RRW_RRW_CNS:
@@ -11975,56 +11920,53 @@ size_t emitter::emitOutputInstr(insGroup* ig, instrDesc* id, BYTE** dp)
             regcode = (insEncodeReg345(ins, rReg, size, &code) | insEncodeReg012(ins, mReg, size, &code));
 
             // Output the REX prefix
-            dst += emitOutputRexOrVexPrefixIfNeeded(ins, dst, code);
+            emitOutputRexOrVexPrefixIfNeeded(out, ins, code);
 
             if (code & 0xFF000000)
             {
                 // Output the highest word of the opcode
-                dst += emitOutputWord(dst, code >> 16);
+                out.OutputWord(code >> 16);
                 code &= 0x0000FFFF;
 
                 if (Is4ByteSSEInstruction(ins))
                 {
                     // Output 3rd byte of the opcode
-                    dst += emitOutputByte(dst, code);
+                    out.OutputByte(code);
                     code &= 0xFF00;
                 }
             }
             else if (code & 0x00FF0000)
             {
-                dst += emitOutputByte(dst, code >> 16);
+                out.OutputByte(code >> 16);
                 code &= 0x0000FFFF;
             }
 
             // TODO-XArch-CQ: Right now support 4-byte opcode instructions only
             if ((code & 0xFF00) == 0xC000)
             {
-                dst += emitOutputWord(dst, code | (regcode << 8));
+                out.OutputWord(code | (regcode << 8));
             }
             else if ((code & 0xFF) == 0x00)
             {
                 // This case happens for some SSE/AVX instructions only
                 assert(IsAVXInstruction(ins) || Is4ByteSSEInstruction(ins));
 
-                dst += emitOutputByte(dst, (code >> 8) & 0xFF);
-                dst += emitOutputByte(dst, (0xC0 | regcode));
+                out.OutputByte((code >> 8) & 0xFF);
+                out.OutputByte((0xC0 | regcode));
             }
             else
             {
-                dst += emitOutputWord(dst, code);
-                dst += emitOutputByte(dst, (0xC0 | regcode));
+                out.OutputWord(code);
+                out.OutputByte((0xC0 | regcode));
             }
 
-            dst += emitOutputByte(dst, emitGetInsSC(id));
+            out.OutputByte(emitGetInsSC(id));
             sz = emitSizeOfInsDsc(id);
 
-            if (generateCode)
+            // Kill any GC ref in the destination register if necessary.
+            if (!emitInsCanOnlyWriteSSE2OrAVXReg(id))
             {
-                // Kill any GC ref in the destination register if necessary.
-                if (!emitInsCanOnlyWriteSSE2OrAVXReg(id))
-                {
-                    emitGCregDeadUpd(id->idReg1(), dst);
-                }
+                out.GCregDeadUpd(id->idReg1());
             }
             break;
 
@@ -12035,8 +11977,8 @@ size_t emitter::emitOutputInstr(insGroup* ig, instrDesc* id, BYTE** dp)
         case IF_ARD:
         case IF_AWR:
         case IF_ARW:
-
-            dst = emitCodeWithInstructionSize(dst, emitOutputAM<generateCode>(dst, id, insCodeMR(ins)), &callInstrSize);
+            emitOutputAM(out, id, insCodeMR(ins));
+            callInstrSize = out.GetCurrentInstructionSize();
 
             switch (ins)
             {
@@ -12086,13 +12028,13 @@ size_t emitter::emitOutputInstr(insGroup* ig, instrDesc* id, BYTE** dp)
             // Special case 4-byte AVX instructions
             if (EncodedBySSE38orSSE3A(ins))
             {
-                dst = emitOutputAM<generateCode>(dst, id, code, &cnsVal);
+                emitOutputAM(out, id, code, &cnsVal);
             }
             else
             {
                 code    = AddVexPrefixIfNeeded(ins, code, size);
                 regcode = (insEncodeReg345(ins, id->idReg1(), size, &code) << 8);
-                dst     = emitOutputAM<generateCode>(dst, id, code | regcode, &cnsVal);
+                emitOutputAM(out, id, code | regcode, &cnsVal);
             }
 
             sz = emitSizeOfInsDsc(id);
@@ -12103,8 +12045,8 @@ size_t emitter::emitOutputInstr(insGroup* ig, instrDesc* id, BYTE** dp)
             assert(UseVEXEncoding());
             emitGetInsAmdCns(id, &cnsVal);
             code = insCodeMR(ins);
-            dst  = emitOutputAM<generateCode>(dst, id, code, &cnsVal);
-            sz   = emitSizeOfInsDsc(id);
+            emitOutputAM(out, id, code, &cnsVal);
+            sz = emitSizeOfInsDsc(id);
             break;
 
         case IF_RRD_ARD:
@@ -12115,13 +12057,13 @@ size_t emitter::emitOutputInstr(insGroup* ig, instrDesc* id, BYTE** dp)
             code = insCodeRM(ins);
             if (EncodedBySSE38orSSE3A(ins) || (ins == INS_crc32))
             {
-                dst = emitOutputAM<generateCode>(dst, id, code);
+                emitOutputAM(out, id, code);
             }
             else
             {
                 code    = AddVexPrefixIfNeeded(ins, code, size);
                 regcode = (insEncodeReg345(ins, id->idReg1(), size, &code) << 8);
-                dst     = emitOutputAM<generateCode>(dst, id, code | regcode);
+                emitOutputAM(out, id, code | regcode);
             }
             sz = emitSizeOfInsDsc(id);
             break;
@@ -12131,8 +12073,8 @@ size_t emitter::emitOutputInstr(insGroup* ig, instrDesc* id, BYTE** dp)
         {
             assert(IsAVX2GatherInstruction(ins));
             code = insCodeRM(ins);
-            dst  = emitOutputAM<generateCode>(dst, id, code);
-            sz   = emitSizeOfInsDsc(id);
+            emitOutputAM(out, id, code);
+            sz = emitSizeOfInsDsc(id);
             break;
         }
 
@@ -12144,13 +12086,13 @@ size_t emitter::emitOutputInstr(insGroup* ig, instrDesc* id, BYTE** dp)
             code = insCodeRM(ins);
             if (EncodedBySSE38orSSE3A(ins))
             {
-                dst = emitOutputAM<generateCode>(dst, id, code, &cnsVal);
+                emitOutputAM(out, id, code, &cnsVal);
             }
             else
             {
                 code    = AddVexPrefixIfNeeded(ins, code, size);
                 regcode = (insEncodeReg345(ins, id->idReg1(), size, &code) << 8);
-                dst     = emitOutputAM<generateCode>(dst, id, code | regcode, &cnsVal);
+                emitOutputAM(out, id, code | regcode, &cnsVal);
             }
             sz = emitSizeOfInsDsc(id);
             break;
@@ -12162,16 +12104,16 @@ size_t emitter::emitOutputInstr(insGroup* ig, instrDesc* id, BYTE** dp)
             code    = insCodeMR(ins);
             code    = AddVexPrefixIfNeeded(ins, code, size);
             regcode = (insEncodeReg345(ins, id->idReg1(), size, &code) << 8);
-            dst     = emitOutputAM<generateCode>(dst, id, code | regcode);
-            sz      = emitSizeOfInsDsc(id);
+            emitOutputAM(out, id, code | regcode);
+            sz = emitSizeOfInsDsc(id);
             break;
 
         case IF_AWR_RRD_RRD:
         {
             code = insCodeMR(ins);
             code = AddVexPrefixIfNeeded(ins, code, size);
-            dst  = emitOutputAM<generateCode>(dst, id, code);
-            sz   = emitSizeOfInsDsc(id);
+            emitOutputAM(out, id, code);
+            sz = emitSizeOfInsDsc(id);
             break;
         }
 
@@ -12179,14 +12121,14 @@ size_t emitter::emitOutputInstr(insGroup* ig, instrDesc* id, BYTE** dp)
         case IF_AWR_CNS:
         case IF_ARW_CNS:
             emitGetInsAmdCns(id, &cnsVal);
-            dst = emitOutputAM<generateCode>(dst, id, insCodeMI(ins), &cnsVal);
-            sz  = emitSizeOfInsDsc(id);
+            emitOutputAM(out, id, insCodeMI(ins), &cnsVal);
+            sz = emitSizeOfInsDsc(id);
             break;
 
         case IF_ARW_SHF:
             emitGetInsAmdCns(id, &cnsVal);
-            dst = emitOutputAM<generateCode>(dst, id, insCodeMR(ins), &cnsVal);
-            sz  = emitSizeOfInsDsc(id);
+            emitOutputAM(out, id, insCodeMR(ins), &cnsVal);
+            sz = emitSizeOfInsDsc(id);
             break;
 
         /********************************************************************/
@@ -12209,7 +12151,7 @@ size_t emitter::emitOutputInstr(insGroup* ig, instrDesc* id, BYTE** dp)
                     emitCurStackLvl -= sizeof(int);
                 }
 #endif
-                dst = emitOutputSV<generateCode>(dst, id, insCodeMR(ins));
+                emitOutputSV(out, id, insCodeMR(ins));
 
 #if !FEATURE_FIXED_OUT_ARGS
                 if (generateCode)
@@ -12220,7 +12162,8 @@ size_t emitter::emitOutputInstr(insGroup* ig, instrDesc* id, BYTE** dp)
                 break;
             }
 
-            dst = emitCodeWithInstructionSize(dst, emitOutputSV<generateCode>(dst, id, insCodeMR(ins)), &callInstrSize);
+            emitOutputSV(out, id, insCodeMR(ins));
+            callInstrSize = out.GetCurrentInstructionSize();
 
             if (ins == INS_call)
             {
@@ -12233,14 +12176,14 @@ size_t emitter::emitOutputInstr(insGroup* ig, instrDesc* id, BYTE** dp)
         case IF_SWR_CNS:
         case IF_SRW_CNS:
             emitGetInsCns(id, &cnsVal);
-            dst = emitOutputSV<generateCode>(dst, id, insCodeMI(ins), &cnsVal);
-            sz  = emitSizeOfInsDsc(id);
+            emitOutputSV(out, id, insCodeMI(ins), &cnsVal);
+            sz = emitSizeOfInsDsc(id);
             break;
 
         case IF_SRW_SHF:
             emitGetInsCns(id, &cnsVal);
-            dst = emitOutputSV<generateCode>(dst, id, insCodeMR(ins), &cnsVal);
-            sz  = emitSizeOfInsDsc(id);
+            emitOutputSV(out, id, insCodeMR(ins), &cnsVal);
+            sz = emitSizeOfInsDsc(id);
             break;
 
         case IF_SWR_RRD_CNS:
@@ -12248,8 +12191,8 @@ size_t emitter::emitOutputInstr(insGroup* ig, instrDesc* id, BYTE** dp)
             assert(UseVEXEncoding());
             emitGetInsAmdCns(id, &cnsVal);
             code = insCodeMR(ins);
-            dst  = emitOutputSV<generateCode>(dst, id, insCodeMR(ins), &cnsVal);
-            sz   = emitSizeOfInsDsc(id);
+            emitOutputSV(out, id, insCodeMR(ins), &cnsVal);
+            sz = emitSizeOfInsDsc(id);
             break;
 
         case IF_RRW_SRD_CNS:
@@ -12261,7 +12204,7 @@ size_t emitter::emitOutputInstr(insGroup* ig, instrDesc* id, BYTE** dp)
             // Special case 4-byte AVX instructions
             if (EncodedBySSE38orSSE3A(ins))
             {
-                dst = emitOutputSV<generateCode>(dst, id, code, &cnsVal);
+                emitOutputSV(out, id, code, &cnsVal);
             }
             else
             {
@@ -12280,7 +12223,7 @@ size_t emitter::emitOutputInstr(insGroup* ig, instrDesc* id, BYTE** dp)
                 }
 
                 regcode = (insEncodeReg345(ins, id->idReg1(), size, &code) << 8);
-                dst     = emitOutputSV<generateCode>(dst, id, code | regcode, &cnsVal);
+                emitOutputSV(out, id, code | regcode, &cnsVal);
             }
 
             sz = emitSizeOfInsDsc(id);
@@ -12296,7 +12239,7 @@ size_t emitter::emitOutputInstr(insGroup* ig, instrDesc* id, BYTE** dp)
             // since they do not have space to encode ModRM byte.
             if (EncodedBySSE38orSSE3A(ins) || (ins == INS_crc32))
             {
-                dst = emitOutputSV<generateCode>(dst, id, code);
+                emitOutputSV(out, id, code);
             }
             else
             {
@@ -12309,7 +12252,7 @@ size_t emitter::emitOutputInstr(insGroup* ig, instrDesc* id, BYTE** dp)
                 }
 
                 regcode = (insEncodeReg345(ins, id->idReg1(), size, &code) << 8);
-                dst     = emitOutputSV<generateCode>(dst, id, code | regcode);
+                emitOutputSV(out, id, code | regcode);
             }
 
             sz = emitSizeOfInsDsc(id);
@@ -12330,12 +12273,12 @@ size_t emitter::emitOutputInstr(insGroup* ig, instrDesc* id, BYTE** dp)
             // since they do not have space to encode ModRM byte.
             if (EncodedBySSE38orSSE3A(ins))
             {
-                dst = emitOutputSV<generateCode>(dst, id, code);
+                emitOutputSV(out, id, code);
             }
             else
             {
                 regcode = (insEncodeReg345(ins, id->idReg1(), size, &code) << 8);
-                dst     = emitOutputSV<generateCode>(dst, id, code | regcode);
+                emitOutputSV(out, id, code | regcode);
             }
             break;
         }
@@ -12356,12 +12299,12 @@ size_t emitter::emitOutputInstr(insGroup* ig, instrDesc* id, BYTE** dp)
             // since they do not have space to encode ModRM byte.
             if (EncodedBySSE38orSSE3A(ins))
             {
-                dst = emitOutputSV<generateCode>(dst, id, code, &cnsVal);
+                emitOutputSV(out, id, code, &cnsVal);
             }
             else
             {
                 regcode = (insEncodeReg345(ins, id->idReg1(), size, &code) << 8);
-                dst     = emitOutputSV<generateCode>(dst, id, code | regcode, &cnsVal);
+                emitOutputSV(out, id, code | regcode, &cnsVal);
             }
 
             sz = emitSizeOfInsDsc(id);
@@ -12387,7 +12330,7 @@ size_t emitter::emitOutputInstr(insGroup* ig, instrDesc* id, BYTE** dp)
             }
 
             regcode = (insEncodeReg345(ins, id->idReg1(), size, &code) << 8);
-            dst     = emitOutputSV<generateCode>(dst, id, code | regcode);
+            emitOutputSV(out, id, code | regcode);
             break;
 
         /********************************************************************/
@@ -12398,13 +12341,13 @@ size_t emitter::emitOutputInstr(insGroup* ig, instrDesc* id, BYTE** dp)
         case IF_MRW:
         case IF_MWR:
 
-            noway_assert(ins != INS_call);
-            dst = emitOutputCV<generateCode>(dst, id, insCodeMR(ins) | 0x0500);
-            sz  = emitSizeOfInsDsc(id);
+            out.Noway(ins != INS_call);
+            emitOutputCV(out, id, insCodeMR(ins) | 0x0500);
+            sz = emitSizeOfInsDsc(id);
             break;
 
         case IF_MRD_OFF:
-            dst = emitOutputCV<generateCode>(dst, id, insCodeMI(ins));
+            emitOutputCV(out, id, insCodeMI(ins));
             break;
 
         case IF_RRW_MRD_CNS:
@@ -12416,7 +12359,7 @@ size_t emitter::emitOutputInstr(insGroup* ig, instrDesc* id, BYTE** dp)
             // Special case 4-byte AVX instructions
             if (EncodedBySSE38orSSE3A(ins))
             {
-                dst = emitOutputCV<generateCode>(dst, id, code, &cnsVal);
+                emitOutputCV(out, id, code, &cnsVal);
             }
             else
             {
@@ -12435,7 +12378,7 @@ size_t emitter::emitOutputInstr(insGroup* ig, instrDesc* id, BYTE** dp)
                 }
 
                 regcode = (insEncodeReg345(ins, id->idReg1(), size, &code) << 8);
-                dst     = emitOutputCV<generateCode>(dst, id, code | regcode | 0x0500, &cnsVal);
+                emitOutputCV(out, id, code | regcode | 0x0500, &cnsVal);
             }
 
             sz = emitSizeOfInsDsc(id);
@@ -12448,8 +12391,8 @@ size_t emitter::emitOutputInstr(insGroup* ig, instrDesc* id, BYTE** dp)
             code = insCodeMR(ins);
             // only AVX2 vextracti128 and AVX vextractf128 can reach this path,
             // they do not need VEX.vvvv to encode the register operand
-            dst = emitOutputCV<generateCode>(dst, id, code, &cnsVal);
-            sz  = emitSizeOfInsDsc(id);
+            emitOutputCV(out, id, code, &cnsVal);
+            sz = emitSizeOfInsDsc(id);
             break;
 
         case IF_RRD_MRD:
@@ -12461,7 +12404,7 @@ size_t emitter::emitOutputInstr(insGroup* ig, instrDesc* id, BYTE** dp)
             // Special case 4-byte AVX instructions
             if (EncodedBySSE38orSSE3A(ins) || (ins == INS_crc32))
             {
-                dst = emitOutputCV<generateCode>(dst, id, code);
+                emitOutputCV(out, id, code);
             }
             else
             {
@@ -12474,7 +12417,7 @@ size_t emitter::emitOutputInstr(insGroup* ig, instrDesc* id, BYTE** dp)
                 }
 
                 regcode = (insEncodeReg345(ins, id->idReg1(), size, &code) << 8);
-                dst     = emitOutputCV<generateCode>(dst, id, code | regcode | 0x0500);
+                emitOutputCV(out, id, code | regcode | 0x0500);
             }
 
             sz = emitSizeOfInsDsc(id);
@@ -12494,12 +12437,12 @@ size_t emitter::emitOutputInstr(insGroup* ig, instrDesc* id, BYTE** dp)
             // Special case 4-byte AVX instructions
             if (EncodedBySSE38orSSE3A(ins))
             {
-                dst = emitOutputCV<generateCode>(dst, id, code);
+                emitOutputCV(out, id, code);
             }
             else
             {
                 regcode = (insEncodeReg345(ins, id->idReg1(), size, &code) << 8);
-                dst     = emitOutputCV<generateCode>(dst, id, code | regcode | 0x0500);
+                emitOutputCV(out, id, code | regcode | 0x0500);
             }
             sz = emitSizeOfInsDsc(id);
             break;
@@ -12520,12 +12463,12 @@ size_t emitter::emitOutputInstr(insGroup* ig, instrDesc* id, BYTE** dp)
             // Special case 4-byte AVX instructions
             if (EncodedBySSE38orSSE3A(ins))
             {
-                dst = emitOutputCV<generateCode>(dst, id, code, &cnsVal);
+                emitOutputCV(out, id, code, &cnsVal);
             }
             else
             {
                 regcode = (insEncodeReg345(ins, id->idReg1(), size, &code) << 8);
-                dst     = emitOutputCV<generateCode>(dst, id, code | regcode | 0x0500, &cnsVal);
+                emitOutputCV(out, id, code | regcode | 0x0500, &cnsVal);
             }
             sz = emitSizeOfInsDsc(id);
             break;
@@ -12548,8 +12491,8 @@ size_t emitter::emitOutputInstr(insGroup* ig, instrDesc* id, BYTE** dp)
             }
 
             regcode = insEncodeReg012(id->idIns(), id->idReg1(), size, &code);
-            dst     = emitOutputCV<generateCode>(dst, id, code | 0x30 | regcode);
-            sz      = emitSizeOfInsDsc(id);
+            emitOutputCV(out, id, code | 0x30 | regcode);
+            sz = emitSizeOfInsDsc(id);
             break;
 
         case IF_MRD_RRD:
@@ -12571,22 +12514,22 @@ size_t emitter::emitOutputInstr(insGroup* ig, instrDesc* id, BYTE** dp)
             }
 
             regcode = (insEncodeReg345(ins, id->idReg1(), size, &code) << 8);
-            dst     = emitOutputCV<generateCode>(dst, id, code | regcode | 0x0500);
-            sz      = emitSizeOfInsDsc(id);
+            emitOutputCV(out, id, code | regcode | 0x0500);
+            sz = emitSizeOfInsDsc(id);
             break;
 
         case IF_MRD_CNS:
         case IF_MWR_CNS:
         case IF_MRW_CNS:
             emitGetInsDcmCns(id, &cnsVal);
-            dst = emitOutputCV<generateCode>(dst, id, insCodeMI(ins) | 0x0500, &cnsVal);
-            sz  = emitSizeOfInsDsc(id);
+            emitOutputCV(out, id, insCodeMI(ins) | 0x0500, &cnsVal);
+            sz = emitSizeOfInsDsc(id);
             break;
 
         case IF_MRW_SHF:
             emitGetInsDcmCns(id, &cnsVal);
-            dst = emitOutputCV<generateCode>(dst, id, insCodeMR(ins) | 0x0500, &cnsVal);
-            sz  = emitSizeOfInsDsc(id);
+            emitOutputCV(out, id, insCodeMR(ins) | 0x0500, &cnsVal);
+            sz = emitSizeOfInsDsc(id);
             break;
 
         /********************************************************************/
@@ -12605,7 +12548,7 @@ size_t emitter::emitOutputInstr(insGroup* ig, instrDesc* id, BYTE** dp)
     // Make sure we set the instruction descriptor size correctly
     assert(sz == emitSizeOfInsDsc(id));
 
-    if (generateCode)
+    if (out.IsEncoding())
     {
 #if !FEATURE_FIXED_OUT_ARGS
         bool updateStackLevel = !emitIGisInProlog(ig) && !emitIGisInEpilog(ig);
@@ -12661,13 +12604,13 @@ size_t emitter::emitOutputInstr(insGroup* ig, instrDesc* id, BYTE** dp)
     // Only epilog "instructions" and some pseudo-instrs
     // are allowed not to generate any code
 
-    assert(*dp != dst || emitInstHasNoCode(ins));
-    if (generateCode)
+    assert((out.GetCurrentInstructionSize() != 0) || emitInstHasNoCode(ins));
+    if (out.IsEncoding())
     {
 #ifdef DEBUG
         if (emitComp->opts.disAsm || emitComp->opts.dspEmit || emitComp->verbose)
         {
-            emitDispIns(id, false, dspOffs, true, emitCurCodeOffs(*dp), *dp, (dst - *dp));
+            out.DispIns(id, false, dspOffs, true);
         }
 
         if (emitComp->compDebugBreak)
@@ -12705,9 +12648,8 @@ size_t emitter::emitOutputInstr(insGroup* ig, instrDesc* id, BYTE** dp)
         }
 #endif // TRANSLATE_PDB
     }
-    *dp = dst;
 
-    if (generateCode)
+    if (out.IsEncoding())
     {
 #ifdef DEBUG
         if (ins == INS_mulEAX || ins == INS_imulEAX)
@@ -12735,8 +12677,10 @@ size_t emitter::emitOutputInstr(insGroup* ig, instrDesc* id, BYTE** dp)
 #pragma warning(pop)
 #endif
 
-template size_t emitter::emitOutputInstr<true>(insGroup* ig, instrDesc* id, BYTE** dp);
-template size_t emitter::emitOutputInstr<false>(insGroup* ig, instrDesc* id, BYTE** dp);
+template size_t emitter::emitOutputInstr<emitter::SizeOutput>(emitter::SizeOutput& out, insGroup* ig, instrDesc* id);
+template size_t emitter::emitOutputInstr<emitter::EncodeOutput>(emitter::EncodeOutput& out,
+                                                                insGroup*              ig,
+                                                                instrDesc*             id);
 
 /*****************************************************************************/
 /*****************************************************************************/

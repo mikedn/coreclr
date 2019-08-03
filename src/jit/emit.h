@@ -507,7 +507,9 @@ protected:
     // If "ig" corresponds to the start of a basic block that is the
     // target of a funclet return, generate GC information for it's start
     // address "cp", as if it were the return address of a call.
-    void emitGenGCInfoIfFuncletRetTarget(insGroup* ig, BYTE* cp);
+private:
+    class EncodeOutput;
+    void emitGenGCInfoIfFuncletRetTarget(EncodeOutput& out, insGroup* ig);
 
     void emitRecomputeIGoffsets();
 
@@ -1576,11 +1578,13 @@ private:
     unsigned char emitOutputSizeT(BYTE* dst, unsigned __int64 val);
 #endif // defined(_TARGET_X86_)
 
-    size_t emitIssue1Instr(insGroup* ig, instrDesc* id, BYTE** dp);
+private:
+    class EncodeOutput;
+    size_t emitIssue1Instr(EncodeOutput& out, insGroup* ig, instrDesc* id);
 
 #ifdef _TARGET_XARCH_
-    template <bool generateCode = true>
-    size_t emitOutputInstr(insGroup* ig, instrDesc* id, BYTE** dp);
+    template <class Output>
+    size_t emitOutputInstr(Output& out, insGroup* ig, instrDesc* id);
     void emitPredictInstSize(instrDesc* id);
     void emitPredictInstSize(instrDesc*     id,
                              UNATIVE_OFFSET prevSize,
@@ -2059,15 +2063,6 @@ public:
     void emitGCvarDeadSet(int offs, BYTE* addr, ssize_t disp = -1);
 
     GCtype emitRegGCtype(regNumber reg);
-
-    // We have a mixture of code emission methods, some of which return the size of the emitted instruction,
-    // requiring the caller to add this to the current code pointer (dst += <call to emit code>), others of which
-    // return the updated code pointer (dst = <call to emit code>).  Sometimes we'd like to get the size of
-    // the generated instruction for the latter style.  This method accomplishes that --
-    // "emitCodeWithInstructionSize(dst, <call to emitCode>, &instrSize)" will do the call, and set
-    // "*instrSize" to the after-before code pointer difference.  Returns the result of the call.  (And
-    // asserts that the instruction size fits in an unsigned char.)
-    static BYTE* emitCodeWithInstructionSize(BYTE* codePtrBefore, BYTE* newCodePointer, unsigned char* instrSize);
 
     /************************************************************************/
     /*      The following logic keeps track of initialized data sections    */
@@ -2657,18 +2652,6 @@ inline GCtype emitter::emitRegGCtype(regNumber reg)
 inline bool IsCodeAligned(UNATIVE_OFFSET offset)
 {
     return ((offset & (CODE_ALIGN - 1)) == 0);
-}
-
-// Static:
-inline BYTE* emitter::emitCodeWithInstructionSize(BYTE* codePtrBefore, BYTE* newCodePointer, unsigned char* instrSize)
-{
-    // DLD: Perhaps this method should return the instruction size, and we should do dst += <that size>
-    // as is done in other cases?
-    assert(newCodePointer >= codePtrBefore);
-    ClrSafeInt<unsigned char> callInstrSizeSafe = ClrSafeInt<unsigned char>(newCodePointer - codePtrBefore);
-    assert(!callInstrSizeSafe.IsOverflow());
-    *instrSize = callInstrSizeSafe.Value();
-    return newCodePointer;
 }
 
 /*****************************************************************************
