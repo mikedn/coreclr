@@ -551,6 +551,9 @@ public:
                                bool         srcIsUnsigned    = false,
                                bool         hasOverflowCheck = false);
 
+    ValueNumPair VNPairForBitcast(ValueNumPair srcVNPair, var_types castToType, var_types castFromType);
+    ValueNum VNForBitcast(ValueNum src, var_types castToType, var_types castFromType);
+
     // Returns true iff the VN represents an application of VNF_NotAField.
     bool IsVNNotAField(ValueNum vn);
 

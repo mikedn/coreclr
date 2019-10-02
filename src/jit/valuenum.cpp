@@ -7930,6 +7930,10 @@ void Compiler::fgValueNumberTree(GenTree* tree)
         {
             fgValueNumberCastTree(tree);
         }
+        else if (tree->OperIs(GT_BITCAST))
+        {
+            fgValueNumberBitcastTree(tree->AsUnOp());
+        }
         else if (tree->OperGet() == GT_INTRINSIC)
         {
             fgValueNumberIntrinsic(tree);
@@ -8301,6 +8305,17 @@ void Compiler::fgValueNumberCastTree(GenTree* tree)
     tree->gtVNPair = vnStore->VNPairForCast(srcVNPair, castToType, castFromType, srcIsUnsigned, hasOverflowCheck);
 }
 
+void Compiler::fgValueNumberBitcastTree(GenTreeUnOp* tree)
+{
+    assert(tree->OperIs(GT_BITCAST));
+
+    ValueNumPair srcVNPair    = tree->gtGetOp1()->gtVNPair;
+    var_types    castToType   = tree->TypeGet();
+    var_types    castFromType = genActualType(tree->gtGetOp1()->TypeGet());
+
+    tree->gtVNPair = vnStore->VNPairForBitcast(srcVNPair, castToType, castFromType);
+}
+
 // Compute the normal ValueNumber for a cast operation with no exceptions
 ValueNum ValueNumStore::VNForCast(ValueNum  srcVN,
                                   var_types castToType,
@@ -8383,6 +8398,58 @@ ValueNumPair ValueNumStore::VNPairForCast(ValueNumPair srcVNPair,
     }
 
     return resultVNP;
+}
+
+ValueNumPair ValueNumStore::VNPairForBitcast(ValueNumPair src, var_types toType, var_types fromType)
+{
+    ValueNumPair srcVal;
+    ValueNumPair srcExc;
+    VNPUnpackExc(src, &srcVal, &srcExc);
+    src.SetLiberal(VNForBitcast(src.GetLiberal(), toType, fromType));
+    src.SetConservative(VNForBitcast(src.GetConservative(), toType, fromType));
+    return VNPWithExc(srcVal, srcExc);
+}
+
+ValueNum ValueNumStore::VNForBitcast(ValueNum src, var_types toType, var_types fromType)
+{
+    if (!IsVNConstant(src))
+    {
+        return VNForExpr(m_pComp->compCurBB, toType);
+    }
+
+    switch (fromType)
+    {
+        case TYP_FLOAT:
+        {
+            assert(toType == TYP_INT);
+            float fval = ConstantValue<float>(src);
+            int   ival = *reinterpret_cast<int*>(&fval);
+            return VNForIntCon(ival);
+        }
+        case TYP_DOUBLE:
+        {
+            assert(toType == TYP_LONG);
+            double fval = ConstantValue<double>(src);
+            INT64  ival = *reinterpret_cast<INT64*>(&fval);
+            return VNForLongCon(ival);
+        }
+        case TYP_INT:
+        {
+            assert(toType == TYP_FLOAT);
+            int   ival = ConstantValue<int>(src);
+            float fval = *reinterpret_cast<float*>(&ival);
+            return VNForFloatCon(fval);
+        }
+        case TYP_LONG:
+        {
+            assert(toType == TYP_DOUBLE);
+            INT64  ival = ConstantValue<INT64>(src);
+            double fval = *reinterpret_cast<double*>(&ival);
+            return VNForDoubleCon(fval);
+        }
+        default:
+            return VNForExpr(m_pComp->compCurBB, toType);
+    }
 }
 
 void Compiler::fgValueNumberHelperCallFunc(GenTreeCall* call, VNFunc vnf, ValueNumPair vnpExc)
