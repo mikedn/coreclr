@@ -3145,6 +3145,8 @@ void Compiler::compInitOptions(JitFlags* jitFlags)
     opts.compJitSaveFpLrWithCalleeSavedRegisters = 0;
 #endif // defined(_TARGET_ARM64_)
 
+    lvaMaxTrackedCount = JitConfig.JitMaxLclVars();
+
 #ifdef DEBUG
     opts.dspInstrs       = false;
     opts.dspEmit         = false;

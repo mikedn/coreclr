@@ -70,6 +70,7 @@ CONFIG_INTEGER(JitInlinePrintStats, W("JitInlinePrintStats"), 0)
 CONFIG_INTEGER(JitInlineSize, W("JITInlineSize"), DEFAULT_MAX_INLINE_SIZE)
 CONFIG_INTEGER(JitInlineDepth, W("JITInlineDepth"), DEFAULT_MAX_INLINE_DEPTH)
 CONFIG_INTEGER(JitLongAddress, W("JitLongAddress"), 0) // Force using the large pseudo instruction form for long address
+CONFIG_INTEGER(JitMaxLclVars, W("JitMaxLclVars"), 512)
 CONFIG_INTEGER(JitMaxTempAssert, W("JITMaxTempAssert"), 1)
 CONFIG_INTEGER(JitMaxUncheckedOffset, W("JitMaxUncheckedOffset"), 8)
 CONFIG_INTEGER(JitMinOpts, W("JITMinOpts"), 0)                                       // Forces MinOpts

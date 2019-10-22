@@ -3348,7 +3348,7 @@ void Compiler::lvaSortByRefCount()
         jitstd::sort(tracked, tracked + trackedCount, LclVarDsc_BlendedCode_Less(lvaTable DEBUGARG(lvaCount)));
     }
 
-    lvaTrackedCount = min(lclMAX_TRACKED, trackedCount);
+    lvaTrackedCount = min(lvaMaxTrackedCount, trackedCount);
 
     JITDUMP("Tracked variable (%u out of %u) table:\n", lvaTrackedCount, lvaCount);
 
@@ -3366,7 +3366,7 @@ void Compiler::lvaSortByRefCount()
 
     JITDUMP("\n");
 
-    // Mark all variables past the first 'lclMAX_TRACKED' as untracked
+    // Mark all variables past the first 'lvaMaxTrackedCount' as untracked
     for (unsigned varIndex = lvaTrackedCount; varIndex < trackedCount; varIndex++)
     {
         LclVarDsc* varDsc = lvaGetDesc(tracked[varIndex]);

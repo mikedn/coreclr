@@ -2952,6 +2952,7 @@ public:
     bool     lvaTrackedFixed; // true: We cannot add new 'tracked' variable
     unsigned lvaCount;        // total number of locals, which includes function arguments,
                               // special arguments, IL local variables, and JIT temporary variables
+    unsigned lvaMaxTrackedCount;
 
     unsigned   lvaRefCount; // total number of references to locals
     LclVarDsc* lvaTable;    // variable descriptor table

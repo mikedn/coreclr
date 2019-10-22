@@ -1905,7 +1905,7 @@ public:
                 }
 
                 // If we have maxed out lvaTrackedCount then this CSE may end up as an untracked variable
-                if (m_pCompiler->lvaTrackedCount == lclMAX_TRACKED)
+                if (m_pCompiler->lvaTrackedCount == m_pCompiler->lvaMaxTrackedCount)
                 {
                     cse_def_cost += slotCount;
                     cse_use_cost += slotCount;
