@@ -4351,6 +4351,50 @@ NamedIntrinsic Compiler::lookupNamedIntrinsic(CORINFO_METHOD_HANDLE method)
         }
     }
 #endif // FEATURE_HW_INTRINSICS
+#ifdef FEATURE_SIMD
+    else if (strcmp(namespaceName, "System.Numerics") == 0)
+    {
+        if (strcmp(className, "Vector4") == 0)
+        {
+            if (strcmp(methodName, "op_Addition") == 0)
+            {
+                return NI_SSE_Add;
+            }
+            if (strcmp(methodName, "op_Subtraction") == 0)
+            {
+                return NI_SSE_Subtract;
+            }
+            if (strcmp(methodName, "op_Multiply") == 0)
+            {
+                return NI_SSE_Multiply;
+            }
+            if (strcmp(methodName, "op_Division") == 0)
+            {
+                return NI_SSE_Divide;
+            }
+            if (strcmp(methodName, "op_BitwiseAnd") == 0)
+            {
+                return NI_SSE_And;
+            }
+            if (strcmp(methodName, "op_BitwiseOr") == 0)
+            {
+                return NI_SSE_Or;
+            }
+            if (strcmp(methodName, "op_BitwiseExclusiveOr") == 0)
+            {
+                return NI_SSE_Xor;
+            }
+        }
+        else if (strcmp(className, "Vector") == 0)
+        {
+            if (strcmp(methodName, "Equals") == 0)
+            {
+                return (getSIMDVectorRegisterByteLength() == XMM_REGSIZE_BYTES) ? NI_SSE2_CompareEqual
+                                                                                : NI_AVX2_CompareEqual;
+            }
+        }
+    }
+#endif
 
     if (result == NI_Illegal)
     {
